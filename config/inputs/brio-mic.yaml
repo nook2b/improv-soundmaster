@@ -1,0 +1,12 @@
+# Микрофоны веб-камеры Logitech Brio 4K (стерео).
+# Запуск: python -m soundmaster run --input brio-mic
+# Удобно, если камера стоит у сцены: картинка и звук с одного устройства.
+name: brio-mic
+device: "BRIO"          # подстрока имени из python -m soundmaster devices
+sample_rate: 48000
+channels:
+  - { channel: 1, role: stage_mix, name: "Brio L" }
+  - { channel: 2, role: stage_mix, name: "Brio R" }
+notes: >
+  Как и рекордер, слышит всё: актёров, зал и колонки. Если устройство не открывается в стерео,
+  оставьте только первый канал.

@@ -1,0 +1,12 @@
+# Домашний тест: встроенный микрофон Mac.
+# Запуск: python -m soundmaster run --input mac-mic
+# Имя устройства уточнить: python -m soundmaster devices
+# (обычно "MacBook Pro Microphone" / "MacBook Air Microphone"; у iMac — "iMac Microphone").
+name: mac-mic
+device: "MacBook"       # подстрока имени; null — вход, выбранный в системных настройках
+sample_rate: 48000
+channels:
+  - { channel: 1, role: stage_mix, name: "Микрофон Mac" }
+notes: >
+  Микрофон слышит и голос, и динамики Mac. Для проверки записи и уровней — нормально;
+  чтобы микрофон не слышал звуки системы, слушайте в наушниках.
