@@ -59,6 +59,13 @@ def main(argv: list[str] | None = None) -> int:
         print(list_cameras())
         return 0
 
+    from .app import load_show_config, resolve_input_profile
+    from .audio.inputs import load_input_profile
+    from .registry import load_registry
+
+    cfg = load_show_config(args.config)
+    registry = load_registry(cfg.rel(cfg.raw.get("registry", "registry.yaml")))
+
     if args.cmd == "replay":
         from .replay import Replay, ReplayOptions, print_summary
 
@@ -90,12 +97,6 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(rp.run(), rp.out_dir)
         return 0
 
-    from .app import load_show_config, resolve_input_profile
-    from .audio.inputs import load_input_profile
-    from .registry import load_registry
-
-    cfg = load_show_config(args.config)
-    registry = load_registry(cfg.rel(cfg.raw.get("registry", "registry.yaml")))
 
     if args.cmd == "make-test-sounds":
         from .testsounds import make_test_sounds

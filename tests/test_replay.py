@@ -127,3 +127,31 @@ def test_replay_realtime_threads(scene_video, tmp_path):
     assert summary["brain_latency_p50"] >= 0.3
     assert 0 <= summary["asr_delay_p50"] < 0.5
     assert any(r["kind"] == "decision" and r["effect"] == "doorbell" for r in j)
+
+
+def test_cli_replay_by_url(scene_video, tmp_path, monkeypatch):
+    """Регрессия: replay со ссылкой обращался к настройкам до их загрузки."""
+    import shutil as sh
+
+    import yaml
+
+    from soundmaster import __main__ as cli
+    from soundmaster.media import download as dl
+
+    cfg = yaml.safe_load((ROOT / "config" / "show.yaml").read_text(encoding="utf-8"))
+    cfg["registry"] = str(ROOT / "config" / "registry.yaml")
+    cfg["input_profile"] = str(ROOT / "config" / "inputs" / "recorder.yaml")
+    cfg["recording"]["dir"] = str(tmp_path / "rec")
+    show = tmp_path / "show.yaml"
+    show.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+
+    def fake_download(url, directory, max_height=720):
+        directory.mkdir(parents=True, exist_ok=True)
+        return Path(sh.copy(scene_video, directory / "fakeid.mp4"))
+
+    monkeypatch.setattr(dl, "download", fake_download)
+    rc = cli.main(["--config", str(show), "replay", "https://youtu.be/Zha1fA7l6gY", "--fast",
+                   "--transcript", str(scene_video.with_suffix(".txt"))])
+    assert rc == 0
+    assert (tmp_path / "rec" / "downloads" / "fakeid.mp4").exists()
+    assert list((tmp_path / "rec").glob("replay_*_fakeid/report.html"))
