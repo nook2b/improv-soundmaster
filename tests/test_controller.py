@@ -311,3 +311,17 @@ def test_ambience_auto(system, clock):
     d = c.ai_music("restaurant", scene_id=c.state.scene_id, connection_id=c.state.connection_id,
                    t_input_ref=clock.now())
     assert d.result == "started" and c.music.current("ambience").id == "restaurant"
+
+
+def test_show_starts_with_neutral_music(system, clock):
+    c = neutral_auto(system)
+    assert c.start_neutral_music()
+    assert c.music.current("music").id == "style:underscore/calm/low/slow"
+    assert c.music.active["music"].owner == "system"
+    assert style(c, COMEDY, clock).result == "started"  # модель сразу заменяет нейтральную
+
+
+def test_no_neutral_music_when_music_is_not_automatic(system, clock):
+    c = neutral_auto(system)
+    c.music_mode = "SUGGEST"
+    assert not c.start_neutral_music() and c.music.current("music") is None

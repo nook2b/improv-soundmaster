@@ -249,13 +249,8 @@ class Controller:
         if not keep_music:
             self.music_t_set = None
             self.music_picks = 0
-            neutral = (self.scene_cut_music == "neutral" and self.music_neutral is not None
-                       and self.registry.vocabulary is not None
-                       and self.music_mode == "AUTO" and self.state.automation_enabled)
-            if neutral:
-                # Атмосфера прошлого места гаснет, музыка — плавно в нейтральную (без паузы).
-                self.music.stop("ambience")
-                self.music.set_style(self.music_neutral, owner="system")
+            if self.scene_cut_music == "neutral" and self.start_neutral_music():
+                pass  # атмосфера прошлого места погасла, музыка плавно уходит в нейтральную (без паузы)
             else:
                 self.music.stop_all()
         self.engine.mixer.stop(owner="ai", fade=0.3)
@@ -264,6 +259,20 @@ class Controller:
         for cb in self.new_scene_listeners:
             cb(self.state.scene_id, source)
         return self.state.scene_id
+
+    def start_neutral_music(self) -> bool:
+        """Нейтральная музыка, пока модель не поняла сцену: в начале шоу и после «монтажа».
+
+        Только если музыка автоматическая и словарь/нейтральный стиль заданы. False — не включали.
+        """
+        if not (self.music_neutral is not None and self.registry.vocabulary is not None
+                and self.music_mode == "AUTO" and self.state.automation_enabled):
+            return False
+        self.music.stop("ambience")
+        self.music.set_style(self.music_neutral, owner="system")
+        self.journal.write("system", action="neutral_music", scene_id=self.state.scene_id,
+                           style=self.music_neutral.id)
+        return True
 
     def set_scene_hint(self, hint: str) -> None:
         self.state.scene_hint = hint

@@ -158,6 +158,7 @@ class Replay:
                            asr=self.asr.name if self.asr else None,
                            brain=f"{self.brain.name}:{self.brain.model}" if self.brain else None,
                            duration=self.info.duration, has_video=self.info.has_video)
+        self.controller.start_neutral_music()  # как вживую: первая сцена начинается с нейтральной
         if self.fast:
             last_t = await self._run_fast(t0)
         else:

@@ -256,6 +256,8 @@ class App:
         self.output.start()
         self.journal.write("output", latency=getattr(self.output, "output_latency", None),
                            sample_rate=self.mixer.sample_rate)
+        # Первая сцена тоже не в тишине: нейтральная музыка, пока модель не поймёт сцену.
+        self.controller.start_neutral_music()
         if self.input_enabled:
             # Ошибка входа не должна ронять ручной пульт: звук в зал важнее записи.
             try:
