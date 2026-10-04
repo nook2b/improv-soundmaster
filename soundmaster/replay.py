@@ -46,6 +46,7 @@ class ReplayOptions:
     config: Path
     speed: float = 1.0
     asr: str | None = None  # None — из show.yaml
+    asr_model: str | None = None
     brain: str | None = None
     transcript: Path | None = None
     scene_cut_mode: str | None = None
@@ -94,7 +95,10 @@ class Replay:
             if opts.transcript:
                 asr = ScriptedASR(load_transcript_file(opts.transcript))
             else:
-                asr = make_asr(opts.asr or listen.get("asr", "off"), listen)
+                kind = opts.asr or listen.get("asr", "off")
+                if opts.asr_model:
+                    listen = {**listen, f"{kind}_model": opts.asr_model}
+                asr = make_asr(kind, listen)
         self.asr = asr
         self.asr_worker = ASRWorker(asr, self.clock, lambda tr: None) if asr else None
 

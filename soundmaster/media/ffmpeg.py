@@ -93,8 +93,9 @@ def read_video_frames(path: str | Path, fps: float = 5.0, width: int = 320) -> I
     if not info.has_video:
         return
     w, h = scaled_size(info.width, info.height, width)
-    proc = subprocess.Popen([ffmpeg_bin(), "-v", "error", "-i", str(path), "-an", *_frame_args(fps, w, h)],
-                            stdout=subprocess.PIPE)
+    # -hwaccel auto: на Mac — аппаратный декодер (4K HEVC с iPhone/камеры), иначе — программный.
+    proc = subprocess.Popen([ffmpeg_bin(), "-v", "error", "-hwaccel", "auto", "-i", str(path), "-an",
+                             *_frame_args(fps, w, h)], stdout=subprocess.PIPE)
     assert proc.stdout is not None
     size = w * h * 3
     i = 0
