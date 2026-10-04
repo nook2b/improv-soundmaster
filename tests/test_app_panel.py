@@ -147,3 +147,13 @@ def test_live_listening_path(tmp_path):
         assert ("suggest_sfx", "doorbell", "suggested") in calls
     finally:
         app.stop()
+
+
+def test_run_flags_override_show_yaml():
+    from soundmaster.app import apply_run_overrides, load_show_config
+
+    cfg = load_show_config(ROOT / "config" / "show.yaml")
+    apply_run_overrides(cfg, asr="faster", asr_model="large-v3-turbo", brain="openai", camera="Logitech BRIO")
+    assert cfg.raw["listen"]["asr"] == "faster" and cfg.raw["listen"]["faster_model"] == "large-v3-turbo"
+    assert cfg.raw["brain"]["provider"] == "openai"
+    assert cfg.raw["video"] == {**cfg.raw["video"], "enabled": True, "camera": "Logitech BRIO"}

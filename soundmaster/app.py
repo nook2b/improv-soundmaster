@@ -68,6 +68,22 @@ def autonomy_kwargs(cfg: ShowConfig) -> dict[str, Any]:
             "music_first_hold": float(a.get("music_first_hold", 10)), "music_neutral": a.get("music_neutral")}
 
 
+def apply_run_overrides(cfg: ShowConfig, *, asr: str | None = None, asr_model: str | None = None,
+                        brain: str | None = None, camera: str | None = None) -> None:
+    """Флаги командной строки поверх show.yaml — чтобы не править файл ради домашней проверки."""
+    if asr:
+        listen = cfg.raw.setdefault("listen", {})
+        listen["asr"] = asr
+        if asr_model:
+            listen[f"{asr}_model"] = asr_model
+    if brain:
+        cfg.raw.setdefault("brain", {})["provider"] = brain
+    if camera:
+        video = cfg.raw.setdefault("video", {})
+        video["enabled"] = True
+        video["camera"] = camera
+
+
 def load_show_config(path: str | Path) -> ShowConfig:
     path = Path(path).resolve()
     return ShowConfig(path, yaml.safe_load(path.read_text(encoding="utf-8")) or {})
@@ -115,8 +131,9 @@ class InputMonitor:
 
 class App:
     def __init__(self, config_path: str | Path, *, null_audio: bool = False, no_input: bool = False,
-                 input_profile: str | None = None):
+                 input_profile: str | None = None, overrides: dict[str, Any] | None = None):
         self.cfg = load_show_config(config_path)
+        apply_run_overrides(self.cfg, **(overrides or {}))
         self.clock = Clock()
         self.show_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 

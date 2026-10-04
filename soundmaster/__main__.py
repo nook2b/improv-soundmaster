@@ -30,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--no-browser", action="store_true", help="не открывать браузер")
     input_help = "профиль входа вместо указанного в show.yaml: mac-mic, brio-mic, recorder или путь к YAML"
     r.add_argument("--input", help=input_help)
+    r.add_argument("--asr", choices=["mlx", "faster", "off"], help="распознавание (вместо listen.asr в show.yaml)")
+    r.add_argument("--asr-model", help="модель распознавания (faster: small / large-v3-turbo …)")
+    r.add_argument("--brain", choices=["openai", "gemini", "off"], help="облачная модель (вместо brain.provider)")
+    r.add_argument("--camera", help="включить камеру: имя из `cameras` (вместо video.enabled/camera)")
     sub.add_parser("devices", help="список аудиоустройств")
     sub.add_parser("cameras", help="список камер macOS")
     rp = sub.add_parser("replay", help="прогнать запись через систему (ничего не звучит, всё в отчёт)")
@@ -147,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     from .app import App
     from .panel.server import run_panel
 
-    app = App(args.config, null_audio=args.null_audio, no_input=args.no_input, input_profile=args.input)
+    app = App(args.config, null_audio=args.null_audio, no_input=args.no_input, input_profile=args.input,
+              overrides={"asr": args.asr, "asr_model": args.asr_model, "brain": args.brain, "camera": args.camera})
     host = cfg.get("panel", "host", "127.0.0.1")
     port = int(cfg.get("panel", "port", 8765))
     url = f"http://{host}:{port}"

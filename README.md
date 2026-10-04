@@ -67,6 +67,10 @@ python -m soundmaster run                # открыть пульт: http://127
 
 Без звуковой карты и входа (проверить интерфейс): `python -m soundmaster run --null-audio`.
 
+Домашняя проверка всего конвейера без правки `show.yaml` — флаги `run`:
+`python -m soundmaster run --input brio-mic --asr faster --brain openai --camera "Logitech BRIO"`
+(`--asr-model large-v3-turbo` — с видеокартой NVIDIA; имя камеры — из `cameras`).
+
 ## Домашний тест без рекордера
 
 ```bash
