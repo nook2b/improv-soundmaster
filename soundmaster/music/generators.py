@@ -1,0 +1,192 @@
+"""Генераторы потоковой музыки.
+
+Генератор получает проверенный пресет из реестра (а не свободный текст от модели) и пишет
+стерео-блоки float32 в `StreamBuffer`. Микшер читает буфер как обычный голос на шине music.
+
+- `TestToneGenerator` — локальный синтезатор аккордов для проверки цепочки без сети и ключей.
+- `LyriaRealtimeGenerator` — адаптер Google Lyria RealTime (экспериментальный, не проверен
+  на реальном ключе; включается в config/show.yaml).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import threading
+from abc import ABC, abstractmethod
+from typing import Any
+
+import numpy as np
+
+from ..audio.mixer import StreamBuffer
+
+
+class MusicGenerator(ABC):
+    name = "base"
+
+    def __init__(self, sample_rate: int):
+        self.sample_rate = sample_rate
+        self.buffer: StreamBuffer | None = None
+        self.error: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return self.error is None
+
+    @abstractmethod
+    def start(self, preset: dict[str, Any], buffer: StreamBuffer) -> None: ...
+
+    @abstractmethod
+    def update(self, preset: dict[str, Any]) -> None:
+        """Сменить состояние без остановки потока."""
+
+    @abstractmethod
+    def stop(self) -> None: ...
+
+
+class TestToneGenerator(MusicGenerator):
+    """Мягкий аккорд с пульсацией. Пресет: root_hz, bpm, chord (полутоны), brightness 0..1."""
+
+    __test__ = False  # не тестовый класс pytest
+    name = "test_tone"
+
+    def __init__(self, sample_rate: int, block: int = 2048, ahead_seconds: float = 2.0):
+        super().__init__(sample_rate)
+        self.block = block
+        self.ahead = int(ahead_seconds * sample_rate)
+        self.preset: dict[str, Any] = {}
+        self._phase = 0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, preset: dict[str, Any], buffer: StreamBuffer) -> None:
+        self.preset = dict(preset)
+        self.buffer = buffer
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="test-tone-gen", daemon=True)
+        self._thread.start()
+
+    def update(self, preset: dict[str, Any]) -> None:
+        self.preset = dict(preset)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self.buffer:
+            self.buffer.closed = True
+        if self._thread:
+            self._thread.join(timeout=1)
+
+    def render_block(self, n: int) -> np.ndarray:
+        p = self.preset
+        root = float(p.get("root_hz", 220.0))
+        bpm = float(p.get("bpm", 70.0))
+        chord = p.get("chord", [0, 4, 7])
+        bright = float(p.get("brightness", 0.3))
+        t = (self._phase + np.arange(n)) / self.sample_rate
+        sig = np.zeros(n, np.float64)
+        for semis in chord:
+            f = root * 2 ** (semis / 12)
+            sig += np.sin(2 * np.pi * f * t) + bright * 0.3 * np.sin(2 * np.pi * 2 * f * t)
+        beat = 0.6 + 0.4 * np.cos(2 * np.pi * (bpm / 60.0) * t) ** 2
+        sig = 0.12 * sig / max(1, len(chord)) * beat
+        self._phase += n
+        return np.stack([sig, sig], axis=1).astype(np.float32)
+
+    def _run(self) -> None:
+        import time
+
+        assert self.buffer is not None
+        while not self._stop.is_set():
+            if self.buffer.frames < self.ahead:
+                self.buffer.push(self.render_block(self.block))
+            else:
+                time.sleep(self.block / self.sample_rate / 2)
+
+
+class LyriaRealtimeGenerator(MusicGenerator):
+    """Google Lyria RealTime через пакет google-genai (v1alpha). Экспериментально.
+
+    Пресет: prompts — список {text, weight}; config — bpm, density, brightness, guidance и т. п.
+    Ключ — переменная окружения GEMINI_API_KEY (в репозиторий и журнал не попадает).
+    Поток: 48 кГц, 16 бит, стерео. Сессия ограничена по времени — при обрыве генератор
+    помечается неисправным, и MusicDirector переходит на библиотечный файл.
+    """
+
+    name = "lyria_realtime"
+    MODEL = "models/lyria-realtime-exp"
+
+    def __init__(self, sample_rate: int):
+        super().__init__(sample_rate)
+        if sample_rate != 48000:
+            raise ValueError("Lyria RealTime отдаёт 48 кГц — поставьте sample_rate: 48000")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._session = None
+        self._preset: dict[str, Any] = {}
+
+    def start(self, preset: dict[str, Any], buffer: StreamBuffer) -> None:
+        if not os.environ.get("GEMINI_API_KEY"):
+            self.error = "нет GEMINI_API_KEY"
+            return
+        self.buffer = buffer
+        self._preset = dict(preset)
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, name="lyria", daemon=True)
+        self._thread.start()
+        asyncio.run_coroutine_threadsafe(self._main(), self._loop)
+
+    async def _apply(self, preset: dict[str, Any]) -> None:
+        from google.genai import types  # type: ignore
+
+        prompts = [types.WeightedPrompt(text=p["text"], weight=float(p.get("weight", 1.0)))
+                   for p in preset.get("prompts", [])]
+        await self._session.set_weighted_prompts(prompts=prompts)
+        if preset.get("config"):
+            await self._session.set_music_generation_config(
+                config=types.LiveMusicGenerationConfig(**preset["config"]))
+
+    async def _main(self) -> None:
+        try:
+            from google import genai  # type: ignore
+
+            client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1alpha"})
+            async with client.aio.live.music.connect(model=self.MODEL) as session:
+                self._session = session
+                await self._apply(self._preset)
+                await session.play()
+                async for msg in session.receive():
+                    chunks = getattr(getattr(msg, "server_content", None), "audio_chunks", None) or []
+                    for ch in chunks:
+                        pcm = np.frombuffer(ch.data, "<i2").astype(np.float32) / 32768.0
+                        self.buffer.push(pcm.reshape(-1, 2))
+            self.error = "сессия завершена"
+        except Exception as e:  # noqa: BLE001
+            self.error = f"{type(e).__name__}: {e}"
+        finally:
+            self._session = None
+
+    def update(self, preset: dict[str, Any]) -> None:
+        self._preset = dict(preset)
+        if self._session and self._loop:
+            asyncio.run_coroutine_threadsafe(self._apply(self._preset), self._loop)
+
+    def stop(self) -> None:
+        if self._session and self._loop:
+            try:
+                asyncio.run_coroutine_threadsafe(self._session.stop(), self._loop).result(timeout=1.0)
+            except Exception:  # noqa: BLE001 — при остановке ошибка сети не важна
+                pass
+        if self.buffer:
+            self.buffer.closed = True
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+
+def make_generator(name: str | None, sample_rate: int) -> MusicGenerator | None:
+    if not name or name == "none":
+        return None
+    if name == "test_tone":
+        return TestToneGenerator(sample_rate)
+    if name == "lyria_realtime":
+        return LyriaRealtimeGenerator(sample_rate)
+    raise ValueError(f"неизвестный генератор музыки: {name}")

@@ -1,0 +1,149 @@
+# Реестр звуков. AI и пульт ссылаются на эффекты только по id отсюда.
+# Пути к файлам — относительно sounds_dir. Тестовые звуки: python -m soundmaster make-test-sounds
+sounds_dir: ../sounds
+
+global:
+  min_gap_between_different_ai_effects: 3.0   # с; серии одного эффекта — его собственные лимиты
+  max_ai_actions_per_minute: 6
+  dedupe_window: 3.0                           # ≥ late_drop.context
+  late_drop:                                   # от границы хода, к которой привязано решение
+    context: 3.0
+    background: 5.0
+    sync: 0.0                                  # синхронные — только через взведение/человека
+  suggestion_ttl: 4.0                          # с; подсказка гаснет сама
+  scene_end_effect: scene_end
+  scene_end: { max_active: 1, pause_after_dismiss: 20, max_per_scene: 3 }
+
+# class: sync (синхронно с действием) | context (событие уже названо) | background (фон)
+# mode:  OFF | SUGGEST | AUTO (AUTO — только после допуска, PLAN.md разд. 10–11)
+# risk:  low | loud (loud — только человек, никогда AUTO)
+effects:
+  camera_shutter:
+    label: Затвор
+    file: sfx/camera_shutter.wav
+    channel: sfx
+    class: sync
+    mode: SUGGEST
+    hotkey: "1"
+    series: { cooldown: 1.0, count: 5, window: 30 }
+    arm:
+      triggers: [operator, keyword]
+      fire_keywords: ["чик", "щёлк"]
+      arm_keywords: ["птичка", "улыбочку"]
+      max_timeout: 5
+
+  doorbell:
+    label: Дверной звонок
+    file: sfx/doorbell.wav
+    channel: sfx
+    class: context
+    mode: SUGGEST
+    hotkey: "2"
+    cooldown: 5
+
+  phone_ring:
+    label: Телефон
+    file: sfx/phone_ring.wav
+    channel: sfx
+    class: context
+    mode: SUGGEST
+    hotkey: "3"
+    cooldown: 5
+
+  knock:
+    label: Стук в дверь
+    file: sfx/knock.wav
+    channel: sfx
+    class: context
+    mode: SUGGEST
+    hotkey: "4"
+    cooldown: 3
+
+  hit:
+    label: Удар
+    file: sfx/hit.wav
+    channel: sfx
+    class: sync
+    mode: SUGGEST
+    hotkey: "5"
+    cooldown: 0.5
+
+  fall:
+    label: Падение
+    file: sfx/fall.wav
+    channel: sfx
+    class: sync
+    mode: SUGGEST
+    hotkey: "6"
+    cooldown: 1
+
+  magic:
+    label: Магия
+    file: sfx/magic.wav
+    channel: sfx
+    class: context
+    mode: SUGGEST
+    hotkey: "7"
+    cooldown: 5
+
+  gunshot:
+    label: Выстрел
+    file: sfx/gunshot.wav
+    channel: sfx
+    class: sync
+    risk: loud            # только явным действием человека
+    mode: SUGGEST
+    hotkey: "9"
+    gain_db: -6
+    arm: { triggers: [operator] }
+
+  scene_end:
+    label: Отбивка
+    file: sting/scene_end.wav
+    channel: sting
+    risk: loud
+    mode: SUGGEST
+    hotkey: "0"
+
+# Музыкальные состояния: AI выбирает id, программа — файл и/или проверенный пресет генератора.
+# file — библиотечный вариант и резерв генератора. generator — пресет для включённого генератора:
+#   test_tone:      root_hz, bpm, chord (полутоны), brightness
+#   lyria_realtime: prompts [{text, weight}], config {bpm, density, brightness, ...}
+music_states:
+  romantic:
+    label: Романтика
+    channel: music
+    file: music/romantic.wav
+    hotkey: "q"
+    generator:
+      root_hz: 220
+      bpm: 60
+      chord: [0, 4, 7, 11]
+      brightness: 0.3
+      prompts: [{ text: "soft romantic piano, warm strings, slow", weight: 1.0 }]
+      config: { bpm: 70, density: 0.3, brightness: 0.4 }
+
+  tension:
+    label: Напряжение
+    channel: music
+    file: music/tension.wav
+    hotkey: "w"
+    generator:
+      root_hz: 110
+      bpm: 90
+      chord: [0, 1, 6]
+      brightness: 0.6
+      prompts: [{ text: "suspenseful low drones, ticking pulse, thriller", weight: 1.0 }]
+      config: { bpm: 90, density: 0.5, brightness: 0.3 }
+
+  restaurant:
+    label: Ресторан (атмосфера)
+    channel: ambience
+    file: ambience/restaurant.wav
+    hotkey: "e"
+
+  rain:
+    label: Дождь (атмосфера)
+    channel: ambience
+    file: ambience/rain.wav
+    hotkey: "r"

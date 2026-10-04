@@ -1,0 +1,388 @@
+"""Контроллер: решает, можно ли выполнить команду, и ведёт журнал решений (PLAN.md, разд. 5).
+
+Ручные команды техника выполняются всегда (кроме отсутствующего файла) и не тратят лимиты
+автоматики. Команды AI проходят проверки по порядку из плана и становятся автозапуском,
+подсказкой технику или отказом с причиной.
+"""
+
+from __future__ import annotations
+
+import itertools
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
+
+from .clock import Clock
+from .engine import Engine
+from .journal import Journal
+from .music.director import MusicDirector
+from .registry import Registry
+
+
+@dataclass
+class Decision:
+    result: str  # played | suggested | confirmed | dismissed | blocked | late_dropped | deduped | expired
+    effect: str | None = None
+    blocked_by: str | None = None
+    suggestion_id: int | None = None
+    voice_id: int | None = None
+
+
+@dataclass
+class Suggestion:
+    id: int
+    kind: str  # "effect" | "music" | "scene_end"
+    target: str  # id эффекта / музыкального состояния
+    scene_id: int
+    t_created: float
+    t_expires: float
+    reason: str = ""
+    confidence: str | None = None
+    request_id: str | None = None
+
+    def as_dict(self, now: float) -> dict[str, Any]:
+        return {
+            "id": self.id, "kind": self.kind, "target": self.target, "reason": self.reason,
+            "confidence": self.confidence, "ttl": round(max(0.0, self.t_expires - now), 1),
+        }
+
+
+@dataclass
+class _Played:
+    t: float
+    effect: str
+    source: str  # manual | ai
+
+
+@dataclass
+class ControllerState:
+    scene_id: int = 1
+    connection_id: int = 0
+    automation_enabled: bool = True
+    scene_hint: str = ""
+    suggestions: dict[int, Suggestion] = field(default_factory=dict)
+
+
+class Controller:
+    def __init__(
+        self,
+        registry: Registry,
+        engine: Engine,
+        music: MusicDirector,
+        journal: Journal,
+        clock: Clock,
+        clean_actor_feed: bool,
+    ):
+        self.registry = registry
+        self.engine = engine
+        self.music = music
+        self.journal = journal
+        self.clock = clock
+        self.clean_actor_feed = clean_actor_feed
+        self.state = ControllerState()
+        self.played: deque[_Played] = deque(maxlen=500)
+        self.ai_actions: deque[tuple[float, str]] = deque(maxlen=500)  # (t, effect) — для лимитов AI
+        self.dismissed: dict[str, float] = {}  # target → когда техник отклонил (в этой сцене)
+        self.scene_end_count = 0
+        self.scene_end_pause_until = 0.0
+        self._ids = itertools.count(1)
+
+    # ---- вспомогательное ---------------------------------------------------------------
+    @property
+    def limits(self):
+        return self.registry.limits
+
+    def _log(self, decision: Decision, source: str, call: str, **extra: Any) -> Decision:
+        self.journal.write(
+            "decision", source=source, call=call, scene_id=self.state.scene_id,
+            effect=decision.effect, result=decision.result, blocked_by=decision.blocked_by,
+            suggestion_id=decision.suggestion_id, voice_id=decision.voice_id, **extra,
+        )
+        return decision
+
+    def _play(self, effect_id: str, owner: str, source: str, info: dict | None = None) -> int | None:
+        effect = self.registry.effect(effect_id)
+        vid = self.engine.play_effect(effect, owner, info)
+        if vid is not None:
+            self.played.append(_Played(self.clock.now(), effect_id, source))
+        return vid
+
+    def _drop_suggestions(self, *, target: str | None = None, kind: str | None = None) -> None:
+        for sid in [s.id for s in self.state.suggestions.values()
+                    if (target is None or s.target == target) and (kind is None or s.kind == kind)]:
+            del self.state.suggestions[sid]
+
+    def _suggest(self, kind: str, target: str, reason: str, confidence: str | None,
+                 request_id: str | None, ttl: float | None = None) -> Suggestion:
+        now = self.clock.now()
+        s = Suggestion(next(self._ids), kind, target, self.state.scene_id, now,
+                       now + (ttl if ttl is not None else self.limits.suggestion_ttl),
+                       reason, confidence, request_id)
+        self.state.suggestions[s.id] = s
+        return s
+
+    # ---- ручные команды ----------------------------------------------------------------
+    def manual_play(self, effect_id: str) -> Decision:
+        effect = self.registry.effect(effect_id)
+        if not self.engine.available(effect):
+            return self._log(Decision("blocked", effect_id, "file_missing"), "manual", "play")
+        # Ручной запуск снимает конфликтующие подсказки того же эффекта.
+        self._drop_suggestions(target=effect_id)
+        vid = self._play(effect_id, "manual", "manual")
+        if vid is None:
+            return self._log(Decision("blocked", effect_id, "already_playing"), "manual", "play")
+        return self._log(Decision("played", effect_id, voice_id=vid), "manual", "play")
+
+    def manual_stop(self, effect_id: str) -> None:
+        self.engine.mixer.stop(effect_id=effect_id, fade=self.registry.effect(effect_id).fade_out or 0.03)
+        self.journal.write("operator", action="stop_effect", effect=effect_id)
+
+    def manual_music(self, state_id: str | None) -> str:
+        self._drop_suggestions(kind="music")
+        if state_id is None:
+            self.music.stop("music")
+            result = "stopped"
+        else:
+            result = self.music.set_state(state_id, owner="manual")
+        self.journal.write("operator", action="music", state=state_id, result=result)
+        return result
+
+    def confirm(self, suggestion_id: int) -> Decision:
+        s = self.state.suggestions.pop(suggestion_id, None)
+        now = self.clock.now()
+        if s is None:
+            return self._log(Decision("blocked", None, "no_such_suggestion"), "manual", "confirm")
+        if now > s.t_expires:
+            return self._log(Decision("expired", s.target, suggestion_id=s.id), "manual", "confirm")
+        if s.scene_id != self.state.scene_id:
+            return self._log(Decision("blocked", s.target, "stale_scene", s.id), "manual", "confirm")
+        if s.kind == "music":
+            self.music.set_state(s.target, owner="manual")
+            return self._log(Decision("confirmed", s.target, suggestion_id=s.id), "manual", "confirm",
+                             request_id=s.request_id)
+        effect_id = s.target
+        if s.kind == "scene_end":
+            effect_id = self.registry.scene_end_effect
+            if effect_id is None:
+                return self._log(Decision("blocked", None, "no_scene_end_effect", s.id), "manual", "confirm")
+        vid = self._play(effect_id, "manual", "manual", {"request_id": s.request_id})
+        return self._log(Decision("confirmed", effect_id, suggestion_id=s.id, voice_id=vid), "manual", "confirm",
+                         request_id=s.request_id)
+
+    def dismiss(self, suggestion_id: int) -> Decision:
+        s = self.state.suggestions.pop(suggestion_id, None)
+        if s is None:
+            return self._log(Decision("blocked", None, "no_such_suggestion"), "manual", "dismiss")
+        now = self.clock.now()
+        self.dismissed[s.target] = now
+        if s.kind == "scene_end":
+            self.scene_end_pause_until = now + float(self.limits.scene_end["pause_after_dismiss"])
+        return self._log(Decision("dismissed", s.target, suggestion_id=s.id), "manual", "dismiss")
+
+    def new_scene(self, hint: str = "", keep_music: bool = False) -> int:
+        self.state.scene_id += 1
+        self.state.scene_hint = hint
+        self.state.suggestions.clear()
+        self.dismissed.clear()
+        self.scene_end_count = 0
+        self.scene_end_pause_until = 0.0
+        if not keep_music:
+            self.music.stop_all()
+        self.engine.mixer.stop(owner="ai", fade=0.3)
+        self.journal.write("operator", action="new_scene", scene_id=self.state.scene_id, hint=hint,
+                           keep_music=keep_music)
+        return self.state.scene_id
+
+    def set_automation(self, enabled: bool) -> None:
+        self.state.automation_enabled = enabled
+        self.journal.write("operator", action="automation", enabled=enabled)
+
+    def stop_ai_sound(self) -> None:
+        """Отключить автоматику и остановить все звуки, запущенные AI (фон — с коротким fade)."""
+        self.set_automation(False)
+        self._drop_suggestions()
+        self.engine.mixer.stop(owner="ai", fade=0.3)
+        for ch, a in list(self.music.active.items()):
+            if a.owner == "ai":
+                self.music.stop(ch)
+        self.journal.write("operator", action="stop_ai_sound")
+
+    def stop_all(self) -> None:
+        self.music.stop_all()
+        self.engine.mixer.stop_all(fade=0.05)
+        self.journal.write("operator", action="stop_all")
+
+    def set_mode(self, effect_id: str, mode: str) -> None:
+        effect = self.registry.effect(effect_id)
+        mode = mode.upper()
+        if mode not in ("OFF", "SUGGEST", "AUTO"):
+            raise ValueError(mode)
+        if mode == "AUTO" and effect.human_only:
+            raise ValueError(f"{effect_id}: громкий эффект/отбивка не может быть AUTO")
+        effect.mode = mode
+        self.journal.write("operator", action="set_mode", effect=effect_id, mode=mode)
+
+    def new_connection(self) -> int:
+        """Новое соединение с AI: всё, что пришло по старому, считается устаревшим."""
+        self.state.connection_id += 1
+        self._drop_suggestions()
+        self.journal.write("system", action="new_connection", connection_id=self.state.connection_id)
+        return self.state.connection_id
+
+    # ---- команды AI ---------------------------------------------------------------------
+    def _ai_limits(self, effect_id: str, now: float) -> str | None:
+        e = self.registry.effect(effect_id)
+        mine = [t for t, eid in self.ai_actions if eid == effect_id]
+        if mine and e.series.cooldown and now - mine[-1] < e.series.cooldown:
+            return "cooldown"
+        if e.series.count and e.series.window:
+            if sum(1 for t in mine if now - t < e.series.window) >= e.series.count:
+                return "series_limit"
+        others = [t for t, eid in self.ai_actions if eid != effect_id]
+        if others and now - others[-1] < self.limits.min_gap_between_different_ai_effects:
+            return "global_gap"
+        # Серия одного эффекта считается за одно вмешательство.
+        recent = [eid for t, eid in self.ai_actions if now - t < 60.0]
+        distinct_runs = sum(1 for i, eid in enumerate(recent) if i == 0 or recent[i - 1] != eid)
+        if distinct_runs >= self.limits.max_ai_actions_per_minute and (not recent or recent[-1] != effect_id):
+            return "per_minute_limit"
+        return None
+
+    def ai_effect(
+        self,
+        effect_id: str,
+        *,
+        scene_id: int,
+        connection_id: int,
+        t_input_ref: float,
+        request_id: str | None = None,
+        reason: str = "",
+        confidence: str | None = None,
+        call: str = "suggest_sfx",
+    ) -> Decision:
+        now = self.clock.now()
+        extra = {"request_id": request_id, "reason": reason, "confidence": confidence,
+                 "t_input_ref": round(t_input_ref, 4), "connection_id": connection_id}
+
+        def log(d: Decision) -> Decision:
+            return self._log(d, "ai", call, **extra)
+
+        # 1. эффект и режим
+        effect = self.registry.effects.get(effect_id)
+        if effect is None:
+            return log(Decision("blocked", effect_id, "unknown_effect"))
+        if effect.mode == "OFF":
+            return log(Decision("blocked", effect_id, "mode_off"))
+        if not self.engine.available(effect):
+            return log(Decision("blocked", effect_id, "file_missing"))
+        # 2. актуальность
+        if scene_id != self.state.scene_id:
+            return log(Decision("blocked", effect_id, "stale_scene"))
+        if connection_id != self.state.connection_id:
+            return log(Decision("blocked", effect_id, "stale_connection"))
+        if effect.cls == "sync":
+            # Синхронный эффект прямым вызовом всегда опаздывает: только взведение или человек.
+            return log(Decision("blocked", effect_id, "sync_requires_arm_or_human"))
+        late = self.limits.late_drop.get(effect.cls, 0.0)
+        if now - t_input_ref > late:
+            return log(Decision("late_dropped", effect_id, f"late>{late}s"))
+        # 3. уже выполнено / уже предложено
+        if any(p.effect == effect_id and now - p.t < self.limits.dedupe_window for p in self.played):
+            return log(Decision("deduped", effect_id, "recently_played"))
+        if any(s.target == effect_id for s in self.state.suggestions.values()):
+            return log(Decision("deduped", effect_id, "already_suggested"))
+        # 4. отклонено техником
+        t_dis = self.dismissed.get(effect_id)
+        if t_dis is not None and now - t_dis < self.limits.dedupe_window:
+            return log(Decision("blocked", effect_id, "dismissed_by_operator"))
+        # 5. лимиты автоматики
+        lim = self._ai_limits(effect_id, now)
+        if lim:
+            return log(Decision("blocked", effect_id, lim))
+        self.ai_actions.append((now, effect_id))
+        # 6. нужен ли человек
+        why_suggest = None
+        if effect.human_only:
+            why_suggest = "human_only"
+        elif effect.mode != "AUTO":
+            why_suggest = "mode_suggest"
+        elif not self.state.automation_enabled:
+            why_suggest = "automation_off"
+        elif not self.clean_actor_feed:
+            why_suggest = "no_clean_actor_feed"
+        if why_suggest:
+            s = self._suggest("effect", effect_id, reason, confidence, request_id)
+            return log(Decision("suggested", effect_id, why_suggest, s.id))
+        vid = self._play(effect_id, "ai", "ai", {"request_id": request_id})
+        return log(Decision("played", effect_id, voice_id=vid))
+
+    def ai_music(self, state_id: str, *, scene_id: int, connection_id: int, t_input_ref: float,
+                 request_id: str | None = None, reason: str = "", confidence: str | None = None) -> Decision:
+        """Фон от AI на этапах 0–3 — только подсказка технику."""
+        now = self.clock.now()
+        extra = {"request_id": request_id, "reason": reason, "confidence": confidence}
+
+        def log(d: Decision) -> Decision:
+            return self._log(d, "ai", "suggest_background", **extra)
+
+        if state_id not in self.registry.music_states:
+            return log(Decision("blocked", state_id, "unknown_music_state"))
+        if scene_id != self.state.scene_id or connection_id != self.state.connection_id:
+            return log(Decision("blocked", state_id, "stale"))
+        if now - t_input_ref > self.limits.late_drop.get("background", 5.0):
+            return log(Decision("late_dropped", state_id))
+        active = self.music.active.get(self.registry.music_states[state_id].channel)
+        if active and active.state.id == state_id:
+            return log(Decision("deduped", state_id, "already_playing"))
+        if any(s.target == state_id for s in self.state.suggestions.values()):
+            return log(Decision("deduped", state_id, "already_suggested"))
+        s = self._suggest("music", state_id, reason, confidence, request_id, ttl=self.limits.suggestion_ttl * 2)
+        return log(Decision("suggested", state_id, "background_suggest_only", s.id))
+
+    def ai_scene_end(self, *, scene_id: int, connection_id: int, request_id: str | None = None,
+                     reason: str = "", confidence: str | None = None) -> Decision:
+        now = self.clock.now()
+        cfg = self.limits.scene_end
+        extra = {"request_id": request_id, "reason": reason, "confidence": confidence}
+
+        def log(d: Decision) -> Decision:
+            return self._log(d, "ai", "suggest_scene_end", **extra)
+
+        if scene_id != self.state.scene_id or connection_id != self.state.connection_id:
+            return log(Decision("blocked", "scene_end", "stale"))
+        active = [s for s in self.state.suggestions.values() if s.kind == "scene_end"]
+        if len(active) >= int(cfg["max_active"]):
+            return log(Decision("deduped", "scene_end", "already_suggested"))
+        if now < self.scene_end_pause_until:
+            return log(Decision("blocked", "scene_end", "pause_after_dismiss"))
+        if self.scene_end_count >= int(cfg["max_per_scene"]):
+            return log(Decision("blocked", "scene_end", "max_per_scene"))
+        self.scene_end_count += 1
+        s = self._suggest("scene_end", "scene_end", reason, confidence, request_id)
+        return log(Decision("suggested", "scene_end", "human_only", s.id))
+
+    # ---- периодическое -----------------------------------------------------------------
+    def tick(self) -> None:
+        now = self.clock.now()
+        for s in [s for s in self.state.suggestions.values() if now > s.t_expires]:
+            del self.state.suggestions[s.id]
+            if s.kind == "scene_end":
+                self.scene_end_pause_until = now + float(self.limits.scene_end["pause_after_dismiss"])
+            self._log(Decision("expired", s.target, suggestion_id=s.id), "system", "expire")
+        self.music.tick()
+        self.engine.pump_events()
+
+    def snapshot(self) -> dict[str, Any]:
+        now = self.clock.now()
+        playing = sorted({(eid, owner) for _, eid, _, owner in self.engine.mixer.playing})
+        return {
+            "t": round(now, 2),
+            "scene_id": self.state.scene_id,
+            "scene_hint": self.state.scene_hint,
+            "automation": self.state.automation_enabled,
+            "clean_actor_feed": self.clean_actor_feed,
+            "suggestions": [s.as_dict(now) for s in self.state.suggestions.values()],
+            "playing": [{"effect": e, "owner": o} for e, o in playing],
+            "music": self.music.status(),
+            "modes": {e.id: e.mode for e in self.registry.effects.values()},
+        }

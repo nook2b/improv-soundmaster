@@ -1,0 +1,161 @@
+"""Музыкальный режиссёр: включает «музыкальное состояние» из файла или генератора.
+
+Источник — генератор (если включён и исправен) или библиотечный файл того же состояния.
+При сбое генератора или опустевшем буфере — плавный переход на файл (или тишину), а не обрыв.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..audio.mixer import StreamBuffer
+from ..engine import Engine
+from ..journal import Journal
+from ..registry import MusicState, Registry
+from .generators import MusicGenerator
+
+
+@dataclass
+class ActiveMusic:
+    state: MusicState
+    source: str  # "generator" | "file"
+    voice_id: int
+    owner: str
+    buffer: StreamBuffer | None = None
+    underruns_seen: int = 0
+
+
+class MusicDirector:
+    def __init__(
+        self,
+        registry: Registry,
+        engine: Engine,
+        journal: Journal,
+        generator: MusicGenerator | None = None,
+        prebuffer_seconds: float = 1.0,
+        buffer_seconds: float = 8.0,
+        max_underruns: int = 20,
+    ):
+        self.registry = registry
+        self.engine = engine
+        self.journal = journal
+        self.generator = generator
+        self.use_generator = generator is not None
+        self.prebuffer = prebuffer_seconds
+        self.buffer_seconds = buffer_seconds
+        self.max_underruns = max_underruns
+        self.active: dict[str, ActiveMusic] = {}  # канал → что играет
+        self._pending: dict[str, tuple[MusicState, str, StreamBuffer]] = {}  # ждём предзаполнения буфера
+
+    @property
+    def sample_rate(self) -> int:
+        return self.engine.mixer.sample_rate
+
+    def set_state(self, state_id: str, owner: str = "manual") -> str:
+        state = self.registry.music_states.get(state_id)
+        if state is None:
+            raise KeyError(f"неизвестное музыкальное состояние: {state_id}")
+        cur = self.active.get(state.channel)
+        if cur and cur.state.id == state_id:
+            return "already_playing"
+
+        # Генератор один и обслуживает только шину music; атмосфера — из файлов.
+        if self.use_generator and self.generator and state.generator and state.channel == "music":
+            if self.generator.healthy and cur and cur.source == "generator":
+                # Генератор уже играет: меняем состояние без остановки потока.
+                self.generator.update(state.generator)
+                cur.state = state
+                cur.owner = owner
+                self.journal.write("music", action="generator_update", state=state_id, owner=owner)
+                return "generator_update"
+            if self.generator.healthy:
+                buf = StreamBuffer(self.buffer_seconds, self.sample_rate)
+                self._stop_generator()
+                self.generator.start(state.generator, buf)
+                self._pending[state.channel] = (state, owner, buf)
+                self.journal.write("music", action="generator_start", state=state_id, owner=owner,
+                                   generator=self.generator.name)
+                self.tick()
+                return "generator_pending"
+            self.journal.write("music", action="generator_unhealthy", state=state_id, error=self.generator.error)
+
+        return self._start_file(state, owner)
+
+    def _start_file(self, state: MusicState, owner: str) -> str:
+        if not state.file or state.file not in self.engine.sounds:
+            self.stop(state.channel)
+            self.journal.write("music", action="no_source", state=state.id)
+            return "no_source"
+        self._fade_out_current(state.channel)
+        data = self.engine.sounds[state.file]
+        vid = self.engine.play_buffer(f"music:{state.id}", _loop_source(data), state.channel, owner,
+                                      state.gain_db, state.fade_in, {"music_state": state.id, "source": "file"})
+        self.active[state.channel] = ActiveMusic(state, "file", vid, owner)
+        self.journal.write("music", action="file_start", state=state.id, owner=owner, voice_id=vid)
+        return "file"
+
+    def _fade_out_current(self, channel: str) -> None:
+        cur = self.active.pop(channel, None)
+        if cur:
+            self.engine.mixer.stop(cur.voice_id, fade=cur.state.fade_out)
+
+    def _stop_generator(self) -> None:
+        if self.generator:
+            self.generator.stop()
+
+    def stop(self, channel: str = "music") -> None:
+        self._pending.pop(channel, None)
+        cur = self.active.get(channel)
+        if cur and cur.source == "generator":
+            self._stop_generator()
+        self._fade_out_current(channel)
+        self.journal.write("music", action="stop", channel=channel)
+
+    def stop_all(self) -> None:
+        for ch in list(self.active) + list(self._pending):
+            self.stop(ch)
+
+    def set_generator_enabled(self, enabled: bool) -> None:
+        self.use_generator = enabled and self.generator is not None
+        self.journal.write("music", action="generator_enabled", enabled=self.use_generator)
+
+    def tick(self) -> None:
+        """Вызывать периодически из основного цикла."""
+        for channel, (state, owner, buf) in list(self._pending.items()):
+            if self.generator and not self.generator.healthy:
+                del self._pending[channel]
+                self.journal.write("music", action="fallback", state=state.id, reason=self.generator.error)
+                self._start_file(state, owner)
+            elif buf.frames >= self.prebuffer * self.sample_rate:
+                del self._pending[channel]
+                self._fade_out_current(channel)
+                vid = self.engine.play_buffer(f"music:{state.id}", buf, channel, owner, state.gain_db,
+                                              state.fade_in, {"music_state": state.id, "source": "generator"})
+                self.active[channel] = ActiveMusic(state, "generator", vid, owner, buf, buf.underruns)
+                self.journal.write("music", action="generator_playing", state=state.id, voice_id=vid)
+
+        for channel, cur in list(self.active.items()):
+            if cur.source != "generator" or cur.buffer is None:
+                continue
+            new_underruns = cur.buffer.underruns - cur.underruns_seen
+            failed = self.generator is not None and not self.generator.healthy
+            if failed or new_underruns > self.max_underruns:
+                reason = self.generator.error if failed else f"буфер пуст ({new_underruns} раз)"
+                self.journal.write("music", action="fallback", state=cur.state.id, reason=reason)
+                self._stop_generator()
+                self._start_file(cur.state, cur.owner)
+
+    def status(self) -> dict:
+        return {
+            "generator": self.generator.name if self.generator else None,
+            "generator_enabled": self.use_generator,
+            "generator_error": self.generator.error if self.generator else None,
+            "active": {ch: {"state": a.state.id, "source": a.source} for ch, a in self.active.items()},
+            "pending": {ch: s.id for ch, (s, _, _) in self._pending.items()},
+        }
+
+
+def _loop_source(data):
+    from ..audio.mixer import BufferSource
+
+    return BufferSource(data, loop=True)

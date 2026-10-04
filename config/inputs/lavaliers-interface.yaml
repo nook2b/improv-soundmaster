@@ -1,0 +1,20 @@
+# Будущая конфигурация: 8 петличек → радиоприёмники → многоканальный аудиоинтерфейс
+# (например Focusrite 18i20, Behringer UMC1820, MOTU). Каждая петличка — свой канал.
+# Канал 9 — микрофон зала; рекордер можно оставить как запасной общий звук сцены.
+name: lavaliers-interface
+device: "18i20"         # подстрока имени интерфейса
+sample_rate: 48000
+channels:
+  - { channel: 1, role: actor_mic, name: "Петличка 1" }
+  - { channel: 2, role: actor_mic, name: "Петличка 2" }
+  - { channel: 3, role: actor_mic, name: "Петличка 3" }
+  - { channel: 4, role: actor_mic, name: "Петличка 4" }
+  - { channel: 5, role: actor_mic, name: "Петличка 5" }
+  - { channel: 6, role: actor_mic, name: "Петличка 6" }
+  - { channel: 7, role: actor_mic, name: "Петличка 7" }
+  - { channel: 8, role: actor_mic, name: "Петличка 8" }
+  - { channel: 9, role: room, name: "Микрофон зала" }
+  - { channel: 10, role: stage_mix, name: "Рекордер/общий микрофон (запас)" }
+notes: >
+  Петлички дают звук актёров без звуков системы (электрически). Колонки всё равно акустически
+  попадают в микрофоны — уровень проникновения измерить на саундчеке.

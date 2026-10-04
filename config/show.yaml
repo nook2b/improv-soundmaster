@@ -1,0 +1,25 @@
+# Настройки запуска. Пути — относительно этого файла.
+registry: registry.yaml
+
+# Профиль входа звука. Сейчас — рекордер у сцены. Когда появятся петлички и микшер/интерфейс,
+# поменять на inputs/lavaliers-interface.yaml или inputs/mixer-aux.yaml (код менять не нужно).
+input_profile: inputs/recorder.yaml
+input_enabled: true          # false — работать без входа (только пульт и проигрыватель)
+
+output:
+  device: null               # подстрока имени устройства вывода; null — выход по умолчанию в macOS
+  sample_rate: 48000
+  blocksize: 256             # меньше — ниже задержка, но выше риск щелчков
+  master_gain_db: 0
+
+recording:
+  enabled: true              # писать вход и выход системы в recordings/<дата-время>/
+  dir: ../recordings
+
+music:
+  generator: test_tone       # none | test_tone | lyria_realtime (нужен GEMINI_API_KEY)
+  generator_enabled: false   # включается на пульте; по умолчанию музыка из файлов
+
+panel:
+  host: 127.0.0.1
+  port: 8765

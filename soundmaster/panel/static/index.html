@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пульт звукаря</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1b2027; --line: #2c333d; --text: #e8ecf1; --muted: #8b95a3;
+    --accent: #3d8bfd; --ok: #2fbf71; --warn: #f0a020; --danger: #e5484d; --loud: #8a2be2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; }
+  header .grow { flex: 1; }
+  .pill { padding: 4px 10px; border-radius: 999px; background: var(--line); font-size: 13px; }
+  .pill.ok { background: #16432b; } .pill.bad { background: #5a1d20; } .pill.warn { background: #5a4310; }
+  main { padding: 12px 16px 40px; display: grid; gap: 14px; }
+  h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 10px; cursor: pointer; text-align: left; min-height: 56px; }
+  button:hover { border-color: var(--accent); }
+  button:active, button.flash { background: var(--accent); }
+  button.playing { border-color: var(--ok); box-shadow: inset 0 0 0 2px var(--ok); }
+  button.loud { border-left: 6px solid var(--loud); }
+  button.missing { opacity: .4; }
+  button .key { float: right; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+  button .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ctl button { min-height: 44px; }
+  .danger { background: #3a1416; border-color: var(--danger); }
+  .sugg { display: grid; gap: 6px; }
+  .sugg .item { display: flex; gap: 8px; align-items: center; padding: 10px; border-radius: 10px; background: #1d2a3d; border: 1px solid var(--accent); }
+  .sugg .item.scene_end { background: #2c1d3d; border-color: var(--loud); }
+  .sugg .item .grow { flex: 1; }
+  .sugg .empty { color: var(--muted); font-size: 13px; }
+  .meters { display: grid; gap: 4px; font-size: 13px; }
+  .meter { display: grid; grid-template-columns: 180px 1fr 60px; gap: 8px; align-items: center; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  input[type=text] { font: inherit; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); min-width: 220px; }
+  .log { font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 140px; overflow: auto; }
+  .help { font-size: 12px; color: var(--muted); }
+  @media (max-width: 600px) { .meter { grid-template-columns: 110px 1fr 50px; } }
+</style>
+</head>
+<body>
+<header>
+  <strong>Пульт</strong>
+  <span class="pill" id="scene">Сцена —</span>
+  <span class="pill" id="auto">Автоматика —</span>
+  <span class="pill" id="feed">Вход —</span>
+  <span class="pill" id="conn">Нет связи</span>
+  <span class="grow"></span>
+  <span class="pill" id="out">Выход —</span>
+</header>
+<main>
+  <section>
+    <h2>Подсказки AI</h2>
+    <div class="sugg" id="sugg"><div class="empty">Нет подсказок</div></div>
+  </section>
+
+  <section>
+    <h2>Эффекты</h2>
+    <div class="grid" id="effects"></div>
+  </section>
+
+  <section>
+    <h2>Музыка и атмосфера</h2>
+    <div class="grid" id="music"></div>
+    <div class="ctl" style="margin-top:8px">
+      <button id="musicStop">Стоп музыка</button>
+      <button id="gen">Генератор: —</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Управление</h2>
+    <div class="ctl">
+      <input type="text" id="hint" placeholder="Подсказка зала (место, жанр)">
+      <button id="newScene">Новая сцена <span class="key">N</span></button>
+      <button id="autoBtn">Автоматика <span class="key">A</span></button>
+      <button id="stopAi" class="danger">Стоп AI-звук <span class="key">X</span></button>
+      <button id="stopAll" class="danger">Стоп всё <span class="key">Esc</span></button>
+      <button id="mark">Отметка события <span class="key">.</span></button>
+    </div>
+    <p class="help">Подтвердить подсказку: эффект — <b>S</b>, музыка — <b>M</b>, отбивка — <b>B</b>. Пробел не используется.</p>
+  </section>
+
+  <section>
+    <h2>Вход</h2>
+    <div class="meters" id="meters"></div>
+  </section>
+
+  <section>
+    <h2>Ответы</h2>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let ws, lib = { effects: [], music: [] }, state = null;
+const keyMap = {};
+
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+function log(text) { const el = $("log"); el.textContent = (new Date().toLocaleTimeString() + "  " + text + "\n" + el.textContent).slice(0, 4000); }
+function flash(el) { if (!el) return; el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 120); }
+
+function button(label, sub, key, cls) {
+  const b = document.createElement("button");
+  b.innerHTML = (key ? `<span class="key">${esc(key.toUpperCase())}</span>` : "") + `${esc(label)}<span class="sub">${esc(sub)}</span>`;
+  if (cls) b.className = cls;
+  return b;
+}
+
+async function loadLibrary() {
+  lib = await (await fetch("/library")).json();
+  const eff = $("effects"); eff.innerHTML = "";
+  for (const e of lib.effects) {
+    const sub = (e.risk === "loud" ? "только вручную · " : "") + ({sync: "синхронный", context: "по событию", background: "фон"}[e["class"]] || "");
+    const b = button(e.label, e.available ? sub : "нет файла", e.hotkey, (e.risk === "loud" ? "loud " : "") + (e.available ? "" : "missing"));
+    b.dataset.effect = e.id;
+    b.onclick = () => { flash(b); send({ cmd: "play", effect: e.id }); };
+    eff.appendChild(b);
+    if (e.hotkey) keyMap[e.hotkey.toLowerCase()] = b;
+  }
+  const mus = $("music"); mus.innerHTML = "";
+  for (const m of lib.music) {
+    const src = [m.has_file ? "файл" : null, m.has_generator ? "генератор" : null].filter(Boolean).join(" + ") || "нет источника";
+    const b = button(m.label, (m.channel === "ambience" ? "атмосфера · " : "музыка · ") + src, m.hotkey);
+    b.dataset.music = m.id;
+    b.onclick = () => { flash(b); send({ cmd: "music", state: m.id }); };
+    mus.appendChild(b);
+    if (m.hotkey) keyMap[m.hotkey.toLowerCase()] = b;
+  }
+  if (lib.missing.length) log("Нет файлов: " + lib.missing.join(", "));
+  if (lib.errors.length) log("Ошибки файлов: " + lib.errors.join("; "));
+}
+
+function render(s) {
+  state = s;
+  $("scene").textContent = `Сцена ${s.scene_id}` + (s.scene_hint ? ` · ${s.scene_hint}` : "");
+  $("auto").textContent = s.automation ? "Автоматика вкл" : "Автоматика выкл";
+  $("auto").className = "pill " + (s.automation ? "ok" : "warn");
+  $("feed").textContent = s.clean_actor_feed ? "Чистый звук актёров" : "Рекордер: AI только подсказывает";
+  $("feed").className = "pill " + (s.clean_actor_feed ? "ok" : "warn");
+  $("out").textContent = `Выход ${s.output.latency_ms} мс · сбоев ${s.output.xruns}` + (s.output.limited_blocks ? ` · лимитер ${s.output.limited_blocks}` : "");
+  $("out").className = "pill " + (s.output.xruns ? "warn" : "");
+
+  const playing = new Set(s.playing.map(p => p.effect));
+  document.querySelectorAll("[data-effect]").forEach(b => b.classList.toggle("playing", playing.has(b.dataset.effect)));
+  const activeMusic = new Set(Object.values(s.music.active).map(a => a.state));
+  document.querySelectorAll("[data-music]").forEach(b => b.classList.toggle("playing", activeMusic.has(b.dataset.music)));
+  const g = s.music;
+  $("gen").textContent = g.generator ? `Генератор ${g.generator}: ${g.generator_enabled ? "вкл" : "выкл"}` + (g.generator_error ? ` (${g.generator_error})` : "") : "Генератор не настроен";
+  $("gen").disabled = !g.generator;
+
+  const box = $("sugg"); box.innerHTML = "";
+  if (!s.suggestions.length) box.innerHTML = '<div class="empty">Нет подсказок</div>';
+  const names = Object.fromEntries([...lib.effects, ...lib.music].map(x => [x.id, x.label]));
+  for (const it of s.suggestions) {
+    const row = document.createElement("div");
+    row.className = "item " + it.kind;
+    const key = { effect: "S", music: "M", scene_end: "B" }[it.kind];
+    row.innerHTML = `<span class="grow"><b>${esc(it.kind === "scene_end" ? "Отбивка" : (names[it.target] || it.target))}</b> · ${esc(it.confidence)} · ${esc(it.reason)} <span class="help">(${it.ttl} с)</span></span>`;
+    const ok = document.createElement("button"); ok.textContent = `Играть (${key})`; ok.onclick = () => send({ cmd: "confirm", id: it.id });
+    const no = document.createElement("button"); no.textContent = "Отклонить"; no.onclick = () => send({ cmd: "dismiss", id: it.id });
+    row.append(ok, no); box.appendChild(row);
+  }
+
+  const m = $("meters"); m.innerHTML = "";
+  if (!s.input.enabled) m.innerHTML = '<div class="help">Вход выключен</div>';
+  if (s.input.error) m.innerHTML = `<div class="help" style="color:var(--danger)">Вход не открылся: ${esc(s.input.error)}. Пульт работает, запись входа не идёт.</div>`;
+  for (const [name, db] of Object.entries(s.input.levels)) {
+    const pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+    m.insertAdjacentHTML("beforeend", `<div class="meter"><span>${esc(name)}</span><span class="bar"><i style="width:${pct}%"></i></span><span>${db} дБ</span></div>`);
+  }
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $("conn").textContent = "На связи"; $("conn").className = "pill ok"; };
+  ws.onclose = () => { $("conn").textContent = "Нет связи с программой"; $("conn").className = "pill bad"; setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "state") render(msg);
+    else if (msg.type === "reply") log(JSON.stringify(msg));
+  };
+}
+
+$("newScene").onclick = () => { send({ cmd: "new_scene", hint: $("hint").value }); $("hint").value = ""; };
+$("autoBtn").onclick = () => send({ cmd: "automation", enabled: !(state && state.automation) });
+$("stopAi").onclick = () => send({ cmd: "stop_ai" });
+$("stopAll").onclick = () => send({ cmd: "stop_all" });
+$("musicStop").onclick = () => send({ cmd: "music", state: null });
+$("gen").onclick = () => send({ cmd: "generator", enabled: !(state && state.music.generator_enabled) });
+$("mark").onclick = () => { flash($("mark")); send({ cmd: "mark" }); };
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "INPUT") { if (ev.key === "Enter") $("newScene").click(); return; }
+  if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
+  const k = ev.key.toLowerCase();
+  const actions = {
+    escape: () => $("stopAll").click(), x: () => $("stopAi").click(), n: () => $("newScene").click(),
+    a: () => $("autoBtn").click(), ".": () => $("mark").click(),
+    s: () => send({ cmd: "confirm_kind", kind: "effect" }),
+    m: () => send({ cmd: "confirm_kind", kind: "music" }),
+    b: () => send({ cmd: "confirm_kind", kind: "scene_end" }),
+  };
+  if (actions[k]) { ev.preventDefault(); actions[k](); return; }
+  if (k === " ") { ev.preventDefault(); return; }
+  if (keyMap[k]) { ev.preventDefault(); keyMap[k].click(); }
+});
+
+loadLibrary().then(connect);
+</script>
+</body>
+</html>

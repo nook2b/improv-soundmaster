@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "improv-soundmaster"
+version = "0.1.0"
+description = "AI-звукарь для импров-шоу"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "pyyaml>=6",
+  "aiohttp>=3.9",
+  "sounddevice>=0.4.6",
+]
+
+[project.optional-dependencies]
+files = ["soundfile>=0.12"]          # float-WAV, AIFF, FLAC
+lyria = ["google-genai>=1.0"]        # потоковая генерация музыки Lyria RealTime
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["soundmaster*"]
+
+[tool.setuptools.package-data]
+soundmaster = ["panel/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

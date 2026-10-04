@@ -1,0 +1,230 @@
+"""Реестр эффектов и музыкальных состояний (config/registry.yaml).
+
+Модель и пульт ссылаются на эффекты только по id из реестра. Изменять реестр во время шоу
+может только техник (режим эффекта), но не AI.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+MODES = ("OFF", "SUGGEST", "AUTO")
+CLASSES = ("sync", "context", "background")
+RISKS = ("low", "loud")
+CHANNELS = ("sfx", "music", "ambience", "sting")
+TRIGGERS = ("operator", "keyword", "transient")
+# Клавиши пульта: n — новая сцена, a — автоматика, s/m/b — подтвердить подсказку эффекта/музыки/отбивки,
+# x — стоп AI-звук, escape — стоп всё, "." — отметка события, " " — не используется
+# (прокрутка/нажатие кнопки в фокусе).
+RESERVED_KEYS = {"n", "a", "s", "m", "b", "x", ".", "escape", " "}
+
+
+class RegistryError(ValueError):
+    pass
+
+
+@dataclass
+class Series:
+    cooldown: float = 0.0
+    count: int = 0  # 0 — без лимита
+    window: float = 0.0
+
+
+@dataclass
+class Effect:
+    id: str
+    file: str
+    channel: str
+    cls: str = "context"
+    risk: str = "low"
+    mode: str = "SUGGEST"
+    label: str = ""
+    hotkey: str | None = None
+    gain_db: float = 0.0
+    series: Series = field(default_factory=Series)
+    loop: bool = False
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    do_not_restart_if_playing: bool = False
+    arm_triggers: tuple[str, ...] = ("operator",)
+    fire_keywords: tuple[str, ...] = ()
+    arm_keywords: tuple[str, ...] = ()
+    max_arm_timeout: float = 5.0
+
+    @property
+    def human_only(self) -> bool:
+        """Громкие эффекты и отбивки запускает только человек."""
+        return self.risk == "loud" or self.channel == "sting"
+
+
+@dataclass
+class MusicState:
+    """Музыкальное состояние: модель выбирает его id, программа — файл и пресет генератора."""
+
+    id: str
+    channel: str = "music"
+    label: str = ""
+    hotkey: str | None = None
+    file: str | None = None  # библиотечный вариант и резерв генератора
+    generator: dict[str, Any] = field(default_factory=dict)  # проверенный пресет генератора
+    fade_in: float = 2.0
+    fade_out: float = 3.0
+    gain_db: float = -6.0
+
+
+@dataclass
+class GlobalLimits:
+    min_gap_between_different_ai_effects: float = 3.0
+    max_ai_actions_per_minute: int = 6
+    dedupe_window: float = 3.0
+    late_drop: dict[str, float] = field(
+        default_factory=lambda: {"context": 3.0, "background": 5.0, "sync": 0.0}
+    )
+    suggestion_ttl: float = 4.0
+    scene_end: dict[str, float] = field(
+        default_factory=lambda: {"max_active": 1, "pause_after_dismiss": 20.0, "max_per_scene": 3}
+    )
+
+
+@dataclass
+class Registry:
+    effects: dict[str, Effect]
+    music_states: dict[str, MusicState]
+    limits: GlobalLimits
+    sounds_dir: Path
+    scene_end_effect: str | None = None  # какой эффект звучит при подтверждении подсказки отбивки
+
+    def effect(self, effect_id: str) -> Effect:
+        try:
+            return self.effects[effect_id]
+        except KeyError:
+            raise RegistryError(f"неизвестный эффект: {effect_id}") from None
+
+    def path_of(self, rel: str) -> Path:
+        return (self.sounds_dir / rel).resolve()
+
+
+def _require(cond: bool, msg: str) -> None:
+    if not cond:
+        raise RegistryError(msg)
+
+
+def _parse_effect(eid: str, raw: dict[str, Any]) -> Effect:
+    _require(isinstance(raw, dict), f"{eid}: ожидается словарь")
+    _require("file" in raw, f"{eid}: нет поля file")
+    channel = raw.get("channel", "sfx")
+    _require(channel in CHANNELS, f"{eid}: канал {channel!r} не из {CHANNELS}")
+    cls = raw.get("class", "background" if channel in ("music", "ambience") else "context")
+    _require(cls in CLASSES, f"{eid}: класс {cls!r} не из {CLASSES}")
+    risk = raw.get("risk", "low")
+    _require(risk in RISKS, f"{eid}: риск {risk!r} не из {RISKS}")
+    mode = str(raw.get("mode", "SUGGEST")).upper()
+    _require(mode in MODES, f"{eid}: режим {mode!r} не из {MODES}")
+
+    s = raw.get("series") or {}
+    series = Series(
+        cooldown=float(s.get("cooldown", raw.get("cooldown", 0.0))),
+        count=int(s.get("count", 0)),
+        window=float(s.get("window", 0.0)),
+    )
+    arm = raw.get("arm") or {}
+    triggers = tuple(arm.get("triggers", ["operator"]))
+    for t in triggers:
+        _require(t in TRIGGERS, f"{eid}: триггер {t!r} не из {TRIGGERS}")
+    effect = Effect(
+        id=eid,
+        file=raw["file"],
+        channel=channel,
+        cls=cls,
+        risk=risk,
+        mode=mode,
+        label=raw.get("label", eid),
+        hotkey=(str(raw["hotkey"]) if raw.get("hotkey") is not None else None),
+        gain_db=float(raw.get("gain_db", 0.0)),
+        series=series,
+        loop=bool(raw.get("loop", channel in ("music", "ambience"))),
+        fade_in=float(raw.get("fade_in", 0.0)),
+        fade_out=float(raw.get("fade_out", 0.0)),
+        do_not_restart_if_playing=bool(raw.get("do_not_restart_if_playing", False)),
+        arm_triggers=triggers,
+        fire_keywords=tuple(arm.get("fire_keywords", ())),
+        arm_keywords=tuple(arm.get("arm_keywords", ())),
+        max_arm_timeout=float(arm.get("max_timeout", 5.0)),
+    )
+    if effect.human_only:
+        # Громкий эффект или отбивка никогда не бывает AUTO и не взводится на автоматический триггер.
+        _require(effect.mode != "AUTO", f"{eid}: громкий эффект/отбивка не может быть AUTO")
+        _require(
+            set(effect.arm_triggers) <= {"operator"},
+            f"{eid}: громкий эффект/отбивка срабатывает только от оператора",
+        )
+    return effect
+
+
+def load_registry(path: str | Path) -> Registry:
+    path = Path(path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    sounds_dir = (path.parent / data.get("sounds_dir", "../sounds")).resolve()
+
+    g = data.get("global") or {}
+    limits = GlobalLimits()
+    for key in (
+        "min_gap_between_different_ai_effects",
+        "dedupe_window",
+        "suggestion_ttl",
+    ):
+        if key in g:
+            setattr(limits, key, float(g[key]))
+    if "max_ai_actions_per_minute" in g:
+        limits.max_ai_actions_per_minute = int(g["max_ai_actions_per_minute"])
+    if "late_drop" in g:
+        limits.late_drop.update({k: float(v) for k, v in g["late_drop"].items()})
+    if "scene_end" in g:
+        limits.scene_end.update(g["scene_end"])
+    _require(
+        limits.dedupe_window >= limits.late_drop.get("context", 0.0),
+        "dedupe_window должен быть не меньше late_drop.context",
+    )
+
+    effects = {eid: _parse_effect(eid, raw) for eid, raw in (data.get("effects") or {}).items()}
+
+    hotkeys: dict[str, str] = {}
+    for e in effects.values():
+        if e.hotkey:
+            _require(e.hotkey not in hotkeys, f"клавиша {e.hotkey!r} у {hotkeys.get(e.hotkey)} и {e.id}")
+            _require(e.hotkey.lower() not in RESERVED_KEYS, f"{e.id}: клавиша {e.hotkey!r} зарезервирована пультом")
+            hotkeys[e.hotkey] = e.id
+
+    states: dict[str, MusicState] = {}
+    for sid, raw in (data.get("music_states") or {}).items():
+        raw = raw or {}
+        channel = raw.get("channel", "music")
+        _require(channel in ("music", "ambience"), f"{sid}: канал музыки {channel!r}")
+        states[sid] = MusicState(
+            id=sid,
+            channel=channel,
+            label=raw.get("label", sid),
+            hotkey=(str(raw["hotkey"]) if raw.get("hotkey") is not None else None),
+            file=raw.get("file"),
+            generator=dict(raw.get("generator") or {}),
+            fade_in=float(raw.get("fade_in", 2.0)),
+            fade_out=float(raw.get("fade_out", 3.0)),
+            gain_db=float(raw.get("gain_db", -6.0)),
+        )
+        _require(states[sid].file or states[sid].generator, f"{sid}: нужен file или generator")
+        hk = states[sid].hotkey
+        if hk:
+            _require(hk not in hotkeys, f"клавиша {hk!r} у {hotkeys.get(hk)} и {sid}")
+            _require(hk.lower() not in RESERVED_KEYS, f"{sid}: клавиша {hk!r} зарезервирована пультом")
+            hotkeys[hk] = sid
+
+    scene_end_effect = g.get("scene_end_effect", "scene_end" if "scene_end" in effects else None)
+    _require(scene_end_effect is None or scene_end_effect in effects,
+             f"scene_end_effect {scene_end_effect!r} нет в effects")
+
+    return Registry(effects=effects, music_states=states, limits=limits, sounds_dir=sounds_dir,
+                    scene_end_effect=scene_end_effect)
