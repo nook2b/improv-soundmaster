@@ -119,3 +119,39 @@ def test_style_without_any_source_is_still_tracked(system):
     assert c.music.set_style(s) == "already_playing"
     c.music.stop("music")
     assert c.music.current("music") is None
+
+
+def test_import_sounds_converts_by_id_and_trims_silence(tmp_path):
+    import shutil
+    import subprocess
+
+    import numpy as np
+
+    from soundmaster.audio.wavio import load_sound, write_wav
+    from soundmaster.importsounds import import_sounds
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("нужен ffmpeg")
+    reg_path = tmp_path / "r.yaml"
+    reg_path.write_text(
+        "sounds_dir: s\neffects:\n  doorbell: {file: sfx/doorbell.wav}\n"
+        "music_states:\n  rain: {file: ambience/rain.wav, channel: ambience}\n", encoding="utf-8")
+    reg = load_registry(reg_path)
+    src = tmp_path / "in"
+    src.mkdir()
+    sr = 44100
+    t = np.arange(sr) / sr
+    bell = np.concatenate([np.zeros(sr), 0.05 * np.sin(2 * np.pi * 880 * t)])  # 1 с тишины, потом звук
+    write_wav(tmp_path / "bell.wav", np.stack([bell, bell], 1).astype(np.float32), sr)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp_path / "bell.wav"), str(src / "Doorbell.mp3")],
+                   check=True)
+    write_wav(src / "rain.wav", np.stack([bell, bell], 1).astype(np.float32), sr)
+    write_wav(src / "kazoo.wav", np.zeros((100, 2), np.float32), sr)
+
+    rep = import_sounds(reg, src)
+    assert sorted(sid for sid, _ in rep.imported) == ["doorbell", "rain"]
+    assert [p.name for p in rep.unknown] == ["kazoo.wav"] and not rep.errors and not rep.missing
+    data = load_sound(reg.path_of("sfx/doorbell.wav"), 48000)
+    assert data.shape[1] == 2 and len(data) < 1.3 * 48000  # тишина в начале срезана
+    assert np.abs(data[: 48000 // 20]).max() > 0.01  # звук начинается сразу
+    assert import_sounds(reg, src).skipped  # повторно без --force — не трогаем

@@ -46,7 +46,8 @@
 
 ```bash
 python -m pytest                                   # все тесты (без звуковой карты; replay-тестам нужен ffmpeg)
-python -m soundmaster make-test-sounds             # тестовые звуки (sounds/ не в git)
+python -m soundmaster import-sounds ПАПКА          # свои звуки (mp3/mp4/wav…, имя = id) → sounds/ (не в git)
+python -m soundmaster make-test-sounds             # тестовые звуки для недостающих
 python -m soundmaster run [--input mac-mic|brio-mic] [--null-audio]
 python -m soundmaster replay ЗАПИСЬ.mp4|ССЫЛКА --asr mlx [--brain openai|gemini] [--max-seconds N] [--fast]
 python -m soundmaster devices | cameras | check

@@ -51,13 +51,19 @@ python -m soundmaster replay "путь\к\сцене.mp4" --asr faster
 
 ```bash
 source .venv/bin/activate
-python -m soundmaster make-test-sounds   # тестовые звуки, пока нет настоящих
+python -m soundmaster import-sounds ПАПКА  # ваши звуки: имя файла = id из реестра (doorbell.mp3 …)
+python -m soundmaster make-test-sounds   # тестовые звуки для того, чего ещё нет
 python -m soundmaster devices            # список аудиоустройств
 python -m soundmaster check              # проверить конфигурацию
 python -m soundmaster run                # открыть пульт: http://127.0.0.1:8765
 ```
 
 Остановка — `Ctrl+C` в Терминале.
+
+Звуки в git не хранятся. `import-sounds` берёт файлы любых форматов (mp3, mp4, m4a, wav, flac …),
+сопоставляет по имени с id эффекта или фона из `config/registry.yaml` (`doorbell.mp3` → эффект
+`doorbell`), конвертирует в WAV, выравнивает громкость и у коротких эффектов срезает тишину в
+начале. Уже существующие файлы не трогает (`--force` — заменить, например тестовые на настоящие).
 
 Без звуковой карты и входа (проверить интерфейс): `python -m soundmaster run --null-audio`.
 

@@ -142,6 +142,12 @@ music_states:
     file: ambience/restaurant.wav
     hotkey: "e"
 
+  restaurant_outside:
+    label: Кафе на улице (атмосфера)
+    channel: ambience
+    file: ambience/restaurant_outside.wav
+    hotkey: "t"
+
   rain:
     label: Дождь (атмосфера)
     channel: ambience

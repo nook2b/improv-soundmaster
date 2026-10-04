@@ -5,6 +5,7 @@
   python -m soundmaster devices        — список аудиоустройств (имена для config)
   python -m soundmaster check          — проверить конфигурацию и файлы
   python -m soundmaster make-test-sounds — создать тестовые звуки для всех файлов реестра
+  python -m soundmaster import-sounds ПАПКА — взять звуки (mp3, mp4, wav …) по именам id из реестра
   python -m soundmaster replay ЗАПИСЬ.mp4 — прогнать запись через систему (теневой режим) + отчёт
   python -m soundmaster cameras        — список камер (имя для config: video.camera)
 """
@@ -46,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     ch.add_argument("--input", help=input_help)
     m = sub.add_parser("make-test-sounds", help="создать тестовые звуки")
     m.add_argument("--force", action="store_true", help="перезаписать существующие файлы")
+    im = sub.add_parser("import-sounds", help="импорт звуков из папки (имя файла = id эффекта/фона)")
+    im.add_argument("folder", help="папка с файлами: doorbell.mp3, rain.mp4 …")
+    im.add_argument("--force", action="store_true", help="перезаписать существующие (в т. ч. тестовые) файлы")
     args = p.parse_args(argv)
 
     if args.cmd == "devices":
@@ -105,6 +109,24 @@ def main(argv: list[str] | None = None) -> int:
         written = make_test_sounds(registry, force=args.force)
         print(f"Создано файлов: {len(written)}" + "".join(f"\n  {w}" for w in written))
         return 0
+
+    if args.cmd == "import-sounds":
+        from .importsounds import import_sounds
+
+        rep = import_sounds(registry, Path(args.folder), force=args.force)
+        for sid, dst in rep.imported:
+            print(f"  ✓ {sid} → {dst}")
+        for sid, dst in rep.skipped:
+            print(f"  = {sid}: уже есть {dst} (заменить: --force)")
+        for src, err in rep.errors:
+            print(f"  ✗ {src.name}: {err}")
+        if rep.unknown:
+            print("Нет такого id в реестре (переименуйте файл или добавьте запись в registry.yaml):\n  "
+                  + "\n  ".join(p.name for p in rep.unknown))
+        if rep.missing:
+            print("Ещё нет файлов для: " + ", ".join(rep.missing) + " (временно: make-test-sounds)")
+        print(f"Импортировано: {len(rep.imported)}")
+        return 1 if rep.errors else 0
 
     if args.cmd == "check":
         profile = load_input_profile(resolve_input_profile(cfg, args.input))
