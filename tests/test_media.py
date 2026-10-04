@@ -142,3 +142,25 @@ def test_download_requires_yt_dlp(monkeypatch, tmp_path):
     monkeypatch.setattr(sh, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="yt-dlp"):
         dl.download("https://youtu.be/x", tmp_path)
+
+
+def test_prompt_echo_removed():
+    prompt = "Импровизационное шоу. Реплики актёров на русском языке."
+    assert clean_text("Реплика актёров на русском языке.", prompt) == ""
+    assert clean_text("Импровизационное шоу.", prompt) == ""
+    assert clean_text("Кто-то звонит в дверь", prompt) == "Кто-то звонит в дверь"
+
+
+def test_camera_args_per_platform(monkeypatch):
+    import sys as _sys
+
+    from soundmaster.media import ffmpeg as ff
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    assert ff.camera_input_args("BRIO", "1280x720", 30)[:2] == ["-f", "avfoundation"]
+    assert ff.camera_input_args("BRIO", "1280x720", 30)[-1] == "BRIO:none"
+    monkeypatch.setattr(_sys, "platform", "win32")
+    args = ff.camera_input_args("Logitech BRIO", "1280x720", 30)
+    assert args[:2] == ["-f", "dshow"] and args[-1] == "video=Logitech BRIO"
+    monkeypatch.setattr(_sys, "platform", "linux")
+    assert ff.camera_input_args("1", "1280x720", 30)[-1] == "/dev/video1"

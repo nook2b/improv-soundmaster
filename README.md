@@ -26,6 +26,27 @@ pip install -e ".[files,dev]"
 микрофон, — разрешите. Если вход молчит: Системные настройки → Конфиденциальность и безопасность →
 Микрофон → включить для Терминала (или iTerm/VS Code).
 
+## Установка на Windows (для разработки и проверок)
+
+Всё, кроме распознавания через MLX (оно только для Mac), работает и на Windows.
+
+```powershell
+winget install Python.Python.3.12 Git.Git Gyan.FFmpeg yt-dlp.yt-dlp
+git clone https://github.com/nook2b/improv-soundmaster.git
+cd improv-soundmaster
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[files,asr-cpu,dev]"
+python -m soundmaster replay "путь\к\сцене.mp4" --asr faster
+```
+
+Распознавание на Windows — `--asr faster`: с видеокартой NVIDIA быстро (можно `--asr-model large-v3-turbo`),
+на одном процессоре — медленнее (модель `small` по умолчанию). Камера на Windows — через DirectShow:
+имя из `python -m soundmaster cameras` впишите в `video.camera`. Ключи API в PowerShell:
+`$env:OPENAI_API_KEY="sk-..."`.
+
+На шоу рекомендуется Mac M2: распознавание через MLX быстрее, а основная проверка — на нём.
+
 ## Первый запуск
 
 ```bash
