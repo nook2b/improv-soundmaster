@@ -113,7 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "import-sounds":
         from .importsounds import import_sounds
 
-        rep = import_sounds(registry, Path(args.folder), force=args.force)
+        try:
+            rep = import_sounds(registry, Path(args.folder), force=args.force)
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Ошибка: {e}")
+            return 1
         for sid, dst in rep.imported:
             print(f"  ✓ {sid} → {dst}")
         for sid, dst in rep.skipped:

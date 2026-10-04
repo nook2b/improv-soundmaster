@@ -155,3 +155,5 @@ def test_import_sounds_converts_by_id_and_trims_silence(tmp_path):
     assert data.shape[1] == 2 and len(data) < 1.3 * 48000  # тишина в начале срезана
     assert np.abs(data[: 48000 // 20]).max() > 0.01  # звук начинается сразу
     assert import_sounds(reg, src).skipped  # повторно без --force — не трогаем
+    with pytest.raises(FileNotFoundError):
+        import_sounds(reg, tmp_path / "нет такой папки")

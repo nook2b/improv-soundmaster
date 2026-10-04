@@ -57,6 +57,8 @@ def convert(src: Path, dst: Path, channel: str) -> None:
 def import_sounds(registry: Registry, folder: Path, force: bool = False) -> ImportReport:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("нужен ffmpeg (Windows: winget install ffmpeg; Mac: brew install ffmpeg)")
+    if not Path(folder).is_dir():
+        raise FileNotFoundError(f"папка не найдена: {folder}")
     rep = ImportReport()
     targets = _targets(registry)
     for src in sorted(p for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXT):
