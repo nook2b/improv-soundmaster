@@ -26,10 +26,11 @@ panel:
 
 # ---- Слух: нарезка речи и распознавание (локально на Mac) ----
 listen:
-  asr: "off"                 # mlx (Mac M1–M4) | faster (CPU) | off
+  asr: "off"                 # mlx (Mac M1–M4) | faster (Windows/Linux) | off
   language: ru
   mlx_model: mlx-community/whisper-large-v3-turbo
-  faster_model: small
+  faster_model: small        # Windows/Linux; с видеокартой NVIDIA можно large-v3-turbo
+  faster_device: auto        # auto (CUDA, если есть) | cpu | cuda
   initial_prompt: "Импровизационное шоу. Реплики актёров на русском языке."
   vad:
     threshold_db: 10         # насколько речь громче фона
@@ -58,7 +59,7 @@ brain:
 # ---- Камера ----
 video:
   enabled: false             # живая камера в режиме run (для прогона записей не нужна)
-  camera: "BRIO"             # имя или номер: python -m soundmaster cameras
+  camera: "BRIO"             # Mac: имя/номер; Windows: полное имя, напр. "Logitech BRIO" (python -m soundmaster cameras)
   capture_size: 1280x720
   fps: 5                     # кадров в секунду для анализа
   width: 640

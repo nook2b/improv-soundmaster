@@ -1,4 +1,4 @@
-"""Чтение звука и кадров через ffmpeg: из файла (прогон записей) и с камеры (macOS, avfoundation).
+"""Чтение звука и кадров через ffmpeg: из файла (прогон записей) и с камеры (macOS / Windows / Linux).
 
 ffmpeg на Mac: `brew install ffmpeg`. Кадры приходят как RGB-массивы маленького размера:
 для детектора движения и для отправки модели этого достаточно.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,8 +94,9 @@ def read_video_frames(path: str | Path, fps: float = 5.0, width: int = 320) -> I
     if not info.has_video:
         return
     w, h = scaled_size(info.width, info.height, width)
-    # -hwaccel auto: на Mac — аппаратный декодер (4K HEVC с iPhone/камеры), иначе — программный.
-    proc = subprocess.Popen([ffmpeg_bin(), "-v", "error", "-hwaccel", "auto", "-i", str(path), "-an",
+    # На Mac — аппаратный декодер (4K HEVC с камеры/телефона), на других системах — программный.
+    hw = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
+    proc = subprocess.Popen([ffmpeg_bin(), "-v", "error", *hw, "-i", str(path), "-an",
                              *_frame_args(fps, w, h)], stdout=subprocess.PIPE)
     assert proc.stdout is not None
     size = w * h * 3
@@ -111,17 +113,33 @@ def read_video_frames(path: str | Path, fps: float = 5.0, width: int = 320) -> I
         proc.wait()
 
 
+def camera_input_args(camera: str, capture_size: str, capture_fps: int) -> list[str]:
+    """Аргументы ffmpeg для живой камеры: macOS — avfoundation, Windows — DirectShow, Linux — v4l2."""
+    if sys.platform == "darwin":
+        return ["-f", "avfoundation", "-framerate", str(capture_fps), "-video_size", capture_size,
+                "-i", f"{camera}:none"]
+    if sys.platform == "win32":
+        return ["-f", "dshow", "-framerate", str(capture_fps), "-video_size", capture_size,
+                "-i", f"video={camera}"]
+    dev = camera if camera.startswith("/dev/") else f"/dev/video{camera if camera.isdigit() else 0}"
+    return ["-f", "v4l2", "-framerate", str(capture_fps), "-video_size", capture_size, "-i", dev]
+
+
 def list_cameras() -> str:
-    """Список камер macOS (имена для config: video.camera)."""
-    out = subprocess.run([ffmpeg_bin(), "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-                         capture_output=True, text=True)
-    return out.stderr
+    """Список камер (имена для config: video.camera)."""
+    if sys.platform == "darwin":
+        cmd = [ffmpeg_bin(), "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""]
+    elif sys.platform == "win32":
+        cmd = [ffmpeg_bin(), "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+    else:
+        return "Linux: камеры — /dev/video0, /dev/video1 … (укажите путь или номер в video.camera)"
+    return subprocess.run(cmd, capture_output=True, text=True).stderr
 
 
 class CameraReader:
-    """Живая камера через ffmpeg avfoundation (macOS). Кадры кладёт в `latest` и вызывает on_frame.
+    """Живая камера через ffmpeg (macOS, Windows, Linux). Для каждого кадра вызывает on_frame.
 
-    Не проверено на реальной камере в среде разработки — проверить на Mac (Logitech Brio).
+    На реальной камере ещё не проверено — проверить с Logitech Brio.
     """
 
     def __init__(self, camera: str, fps: float, width: int, height: int, on_frame, clock,
@@ -139,8 +157,7 @@ class CameraReader:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        cmd = [ffmpeg_bin(), "-v", "error", "-f", "avfoundation", "-framerate", str(self.capture_fps),
-               "-video_size", self.capture_size, "-i", f"{self.camera}:none",
+        cmd = [ffmpeg_bin(), "-v", "error", *camera_input_args(self.camera, self.capture_size, self.capture_fps),
                *_frame_args(self.fps, self.width, self.height)]
         self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)

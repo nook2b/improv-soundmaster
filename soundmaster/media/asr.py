@@ -1,7 +1,7 @@
 """Распознавание речи (звук фразы → текст).
 
 - `MlxWhisperASR` — основной вариант для Mac M1–M4 (Apple MLX, быстро, без интернета после загрузки).
-- `FasterWhisperASR` — запасной (CPU, Linux/Intel Mac).
+- `FasterWhisperASR` — Windows/Linux/Intel Mac: на видеокарте NVIDIA (CUDA) или на процессоре.
 - `ScriptedASR` — подставной распознаватель для тестов и для прогона с готовой расшифровкой.
 
 Модели скачиваются при первом запуске (нужен интернет один раз).
@@ -34,13 +34,23 @@ HALLUCINATIONS = (
 )
 
 
-def clean_text(text: str) -> str:
+def _norm(s: str) -> str:
+    return re.sub(r"[\W_]+", " ", s.lower().replace("ё", "е")).strip()
+
+
+def clean_text(text: str, prompt: str | None = None) -> str:
     t = re.sub(r"\s+", " ", text).strip()
     low = t.lower()
     if any(h in low for h in HALLUCINATIONS):
         return ""
     if re.fullmatch(r"[\W_]*", t):
         return ""
+    if prompt:
+        # На шуме и смехе Whisper повторяет подсказку (initial_prompt) вместо речи — это не реплика.
+        words = [w[:5] for w in _norm(t).split()]
+        pwords = {w[:5] for w in _norm(prompt).split()}
+        if words and sum(w in pwords for w in words) / len(words) >= 0.8:
+            return ""
     return t
 
 
@@ -89,12 +99,14 @@ class MlxWhisperASR(ASR):
 class FasterWhisperASR(ASR):
     name = "faster"
 
-    def __init__(self, model: str = "small", language: str = "ru", initial_prompt: str | None = None):
+    def __init__(self, model: str = "small", language: str = "ru", initial_prompt: str | None = None,
+                 device: str = "auto", compute_type: str = "int8"):
         try:
             from faster_whisper import WhisperModel  # type: ignore
         except ImportError as e:
             raise RuntimeError("нет faster-whisper: pip install -e \".[asr-cpu]\"") from e
-        self._model = WhisperModel(model, device="cpu", compute_type="int8")
+        # device=auto: видеокарта NVIDIA (CUDA), если есть, иначе процессор.
+        self._model = WhisperModel(model, device=device, compute_type=compute_type)
         self.language = language
         self.initial_prompt = initial_prompt
 
@@ -152,7 +164,8 @@ def make_asr(kind: str | None, cfg: dict | None = None) -> ASR | None:
         return MlxWhisperASR(cfg.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
                              cfg.get("language", "ru"), prompt)
     if kind == "faster":
-        return FasterWhisperASR(cfg.get("faster_model", "small"), cfg.get("language", "ru"), prompt)
+        return FasterWhisperASR(cfg.get("faster_model", "small"), cfg.get("language", "ru"), prompt,
+                                cfg.get("faster_device", "auto"), cfg.get("faster_compute", "int8"))
     raise ValueError(f"неизвестный распознаватель: {kind} (mlx | faster | off)")
 
 
@@ -189,7 +202,8 @@ class ASRWorker:
     def process(self, u: Utterance) -> Transcript | None:
         t0 = time.monotonic()
         try:
-            text = clean_text(self.asr.transcribe(u.audio, u.t_start, u.t_end))
+            text = clean_text(self.asr.transcribe(u.audio, u.t_start, u.t_end),
+                              getattr(self.asr, "initial_prompt", None))
         except Exception as e:  # noqa: BLE001
             self.errors += 1
             self.last_error = f"{type(e).__name__}: {e}"
