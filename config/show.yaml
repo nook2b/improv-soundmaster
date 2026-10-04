@@ -17,8 +17,19 @@ recording:
   dir: ../recordings
 
 music:
-  generator: test_tone       # none | test_tone | lyria_realtime (нужен GEMINI_API_KEY)
-  generator_enabled: false   # включается на пульте; по умолчанию музыка из файлов
+  generator: lyria_realtime  # none | test_tone | lyria_realtime (нужен GEMINI_API_KEY и pip install -e ".[lyria]")
+  generator_enabled: true    # false — музыка только из файлов; при сбое генератора — файл настроения или тишина
+
+# ---- Что AI делает сам, без человека ----
+# Решение команды: музыка — автоматически (модель выбирает жанр/настроение/энергию/темп из
+# music_vocabulary в registry.yaml, генератор играет). Эффекты пока — подсказки на пульте (режимы
+# в registry.yaml), пока точность на размеченных записях не дойдёт до порога. «Стоп AI» на пульте
+# всё равно глушит всё, что включил AI.
+autonomy:
+  music: AUTO                # AUTO — музыка и атмосфера включаются сами | SUGGEST — подсказка на пульте
+  music_min_hold: 30         # с: столько держать выбранную музыку в сцене, прежде чем AI её сменит
+  music_first_hold: 10       # с: первый выбор в сцене (по 1–2 репликам) можно поправить быстрее
+  music_neutral: underscore/calm/low/slow   # переходная музыка сразу после «монтажа» (scene_cut.music: neutral)
 
 panel:
   host: 127.0.0.1
@@ -67,8 +78,8 @@ video:
 
 # ---- «Монтаж»: проход перед сценой → новая сцена ----
 scene_cut:
-  mode: SUGGEST              # OFF | SUGGEST (подсказка технику) | AUTO (сама начинает новую сцену)
-  music: stop                # stop — фон новой сцены выбирается заново | keep — оставить
+  mode: AUTO                 # OFF | SUGGEST (подсказка на пульте) | AUTO (сама начинает новую сцену, музыка меняется)
+  music: neutral             # neutral — сразу нейтральная, потом плавно в выбранную | stop — тишина до выбора | keep
   cooldown: 10               # с после начала сцены, когда новый «монтаж» игнорируется
   detector:
     min_height: 0.35         # насколько крупной должна быть фигура (доля высоты кадра)

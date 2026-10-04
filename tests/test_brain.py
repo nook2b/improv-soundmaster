@@ -6,7 +6,7 @@ import numpy as np
 from aiohttp import web
 
 from soundmaster.brain.providers import GeminiBrain, OpenAIBrain, Prices, encode_jpeg, parse_actions
-from soundmaster.brain.prompt import openai_schema, system_text
+from soundmaster.brain.prompt import gemini_schema, openai_schema, system_text
 from soundmaster.brain.scheduler import BrainScheduler, SchedulerConfig
 from soundmaster.media.asr import Transcript
 from soundmaster.registry import load_registry
@@ -129,10 +129,37 @@ def test_schema_and_prompt():
     reg = registry()
     schema = openai_schema(reg)
     ids = schema["properties"]["actions"]["items"]["properties"]["id"]["enum"]
-    assert "doorbell" in ids and "romantic" in ids and None in ids
+    assert "doorbell" in ids and "restaurant" in ids and None in ids
     assert "scene_end" not in ids  # отбивка — отдельным типом действия, не как эффект
+    # Со словарём музыка выбирается через music (жанр/настроение/…), а не id состояния-файла.
+    assert "romantic" not in ids
+    props = schema["properties"]["actions"]["items"]["properties"]
+    assert "music" in props["type"]["enum"]
+    assert "noir" in props["genre"]["enum"] and None in props["mood"]["enum"]
+    assert set(schema["properties"]["actions"]["items"]["required"]) >= {"genre", "mood", "energy", "tempo"}
+    gem = gemini_schema(reg)["properties"]["actions"]["items"]["properties"]
+    assert "tense" in gem["mood"]["enum"]
     text = system_text(reg)
     assert "doorbell" in text and "не создаёт новых событий" in text
+    assert "{background_rules}" not in text and "genre:" in text and "После «монтажа»" in text
+
+
+def test_schema_without_vocabulary_keeps_music_states():
+    reg = registry()
+    reg.vocabulary = None
+    schema = openai_schema(reg)
+    ids = schema["properties"]["actions"]["items"]["properties"]["id"]["enum"]
+    assert "romantic" in ids and "music" not in schema["properties"]["actions"]["items"]["properties"]["type"]["enum"]
+    assert "genre" not in schema["properties"]["actions"]["items"]["properties"]
+    text = system_text(reg)
+    assert "{background_rules}" not in text and "background — музыка или атмосфера" in text
+
+
+def test_parse_actions_keeps_music_style():
+    raw = json.dumps({"actions": [{"type": "music", "id": None, "reason": "суд", "confidence": "high",
+                                   "genre": "noir", "mood": "tense", "energy": "low", "tempo": "slow"}]})
+    acts = parse_actions(raw)
+    assert acts[0]["genre"] == "noir" and acts[0]["tempo"] == "slow"
 
 
 def test_parse_actions_limits_and_cleans():

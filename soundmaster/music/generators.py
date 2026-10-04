@@ -4,8 +4,9 @@
 стерео-блоки float32 в `StreamBuffer`. Микшер читает буфер как обычный голос на шине music.
 
 - `TestToneGenerator` — локальный синтезатор аккордов для проверки цепочки без сети и ключей.
-- `LyriaRealtimeGenerator` — адаптер Google Lyria RealTime (экспериментальный, не проверен
-  на реальном ключе; включается в config/show.yaml).
+- `LyriaRealtimeGenerator` — адаптер Google Lyria RealTime (экспериментальная модель Google;
+  поток проверен на реальном ключе: первый звук через ~3 с; смена стиля — плавный переход;
+  включается в config/show.yaml).
 """
 
 from __future__ import annotations
@@ -103,19 +104,33 @@ class TestToneGenerator(MusicGenerator):
                 time.sleep(self.block / self.sample_rate / 2)
 
 
+def blend_prompts(old: list[dict[str, Any]], new: list[dict[str, Any]], a: float) -> list[dict[str, Any]]:
+    """Смесь описаний для плавного перехода: a=0 — старое, a=1 — новое (веса масштабируются).
+
+    Одинаковые тексты складываются; описания с почти нулевым весом не отправляются.
+    """
+    out: dict[str, float] = {}
+    for prompts, k in ((old, 1.0 - a), (new, a)):
+        for p in prompts:
+            out[p["text"]] = out.get(p["text"], 0.0) + float(p.get("weight", 1.0)) * k
+    return [{"text": t, "weight": round(w, 3)} for t, w in out.items() if w >= 0.05]
+
+
 class LyriaRealtimeGenerator(MusicGenerator):
     """Google Lyria RealTime через пакет google-genai (v1alpha). Экспериментально.
 
-    Пресет: prompts — список {text, weight}; config — bpm, density, brightness, guidance и т. п.
+    Пресет: prompts — список {text, weight}; config — density, brightness, guidance и т. п.
     Ключ — переменная окружения GEMINI_API_KEY (в репозиторий и журнал не попадает).
-    Поток: 48 кГц, 16 бит, стерео. Сессия ограничена по времени — при обрыве генератор
-    помечается неисправным, и MusicDirector переходит на библиотечный файл.
+    Поток: 48 кГц, 16 бит, стерео. Смена состояния — плавная: описания смешиваются шагами за
+    `transition_s` секунд (темп в словаре задан словами, а не bpm: смена bpm требует сброса
+    контекста и звучит обрывом). При обрыве сессии — до `reconnects` переподключений подряд;
+    если не вышло, генератор помечается неисправным, и MusicDirector переходит на файл.
     """
 
     name = "lyria_realtime"
     MODEL = "models/lyria-realtime-exp"
 
-    def __init__(self, sample_rate: int):
+    def __init__(self, sample_rate: int, transition_s: float = 8.0, steps: int = 4, reconnects: int = 3):
         super().__init__(sample_rate)
         if sample_rate != 48000:
             raise ValueError("Lyria RealTime отдаёт 48 кГц — поставьте sample_rate: 48000")
@@ -123,6 +138,11 @@ class LyriaRealtimeGenerator(MusicGenerator):
         self._thread: threading.Thread | None = None
         self._session = None
         self._preset: dict[str, Any] = {}
+        self.transition_s = transition_s
+        self.steps = max(1, steps)
+        self.reconnects = reconnects
+        self._ramp: asyncio.Task | None = None
+        self._stopping = False
 
     def start(self, preset: dict[str, Any], buffer: StreamBuffer) -> None:
         if not os.environ.get("GEMINI_API_KEY"):
@@ -130,47 +150,87 @@ class LyriaRealtimeGenerator(MusicGenerator):
             return
         self.buffer = buffer
         self._preset = dict(preset)
+        self._stopping = False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="lyria", daemon=True)
         self._thread.start()
         asyncio.run_coroutine_threadsafe(self._main(), self._loop)
 
-    async def _apply(self, preset: dict[str, Any]) -> None:
+    async def _set_prompts(self, prompts: list[dict[str, Any]]) -> None:
         from google.genai import types  # type: ignore
 
-        prompts = [types.WeightedPrompt(text=p["text"], weight=float(p.get("weight", 1.0)))
-                   for p in preset.get("prompts", [])]
-        await self._session.set_weighted_prompts(prompts=prompts)
+        await self._session.set_weighted_prompts(
+            prompts=[types.WeightedPrompt(text=p["text"], weight=float(p.get("weight", 1.0))) for p in prompts])
+
+    async def _apply(self, preset: dict[str, Any], previous: dict[str, Any] | None = None) -> None:
+        from google.genai import types  # type: ignore
+
+        new_prompts = preset.get("prompts", [])
+        if previous and previous.get("prompts") and self.transition_s > 0:
+            # Плавно: несколько промежуточных смесей старого и нового описания.
+            for i in range(1, self.steps + 1):
+                await self._set_prompts(blend_prompts(previous["prompts"], new_prompts, i / self.steps))
+                if i < self.steps:
+                    await asyncio.sleep(self.transition_s / self.steps)
+        else:
+            await self._set_prompts(new_prompts)
         if preset.get("config"):
             await self._session.set_music_generation_config(
                 config=types.LiveMusicGenerationConfig(**preset["config"]))
+            # bpm и лад Lyria применяет только после сброса контекста (слышно как обрыв) —
+            # сбрасываем, только если они заданы явно и изменились.
+            old = (previous or {}).get("config") or {}
+            new = preset["config"]
+            if previous is not None and any(k in new and old.get(k) != new.get(k) for k in ("bpm", "scale")):
+                await self._session.reset_context()
 
     async def _main(self) -> None:
         try:
             from google import genai  # type: ignore
 
             client = genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options={"api_version": "v1alpha"})
-            async with client.aio.live.music.connect(model=self.MODEL) as session:
-                self._session = session
-                await self._apply(self._preset)
-                await session.play()
-                async for msg in session.receive():
-                    chunks = getattr(getattr(msg, "server_content", None), "audio_chunks", None) or []
-                    for ch in chunks:
-                        pcm = np.frombuffer(ch.data, "<i2").astype(np.float32) / 32768.0
-                        self.buffer.push(pcm.reshape(-1, 2))
-            self.error = "сессия завершена"
         except Exception as e:  # noqa: BLE001
             self.error = f"{type(e).__name__}: {e}"
-        finally:
-            self._session = None
+            return
+        failures = 0
+        while not self._stopping:
+            try:
+                async with client.aio.live.music.connect(model=self.MODEL) as session:
+                    self._session = session
+                    await self._apply(self._preset)
+                    await session.play()
+                    async for msg in session.receive():
+                        chunks = getattr(getattr(msg, "server_content", None), "audio_chunks", None) or []
+                        for ch in chunks:
+                            failures = 0
+                            pcm = np.frombuffer(ch.data, "<i2").astype(np.float32) / 32768.0
+                            self.buffer.push(pcm.reshape(-1, 2))
+                last = "сессия завершена"
+            except Exception as e:  # noqa: BLE001
+                last = f"{type(e).__name__}: {e}"
+            finally:
+                self._session = None
+            if self._stopping:
+                return
+            failures += 1
+            if failures > self.reconnects:
+                self.error = last
+                return
+            await asyncio.sleep(min(4.0, 0.5 * 2 ** failures))  # переподключение через 1, 2, 4 с
 
     def update(self, preset: dict[str, Any]) -> None:
-        self._preset = dict(preset)
+        previous, self._preset = self._preset, dict(preset)
         if self._session and self._loop:
-            asyncio.run_coroutine_threadsafe(self._apply(self._preset), self._loop)
+            self._loop.call_soon_threadsafe(self._start_ramp, self._preset, previous)
+
+    def _start_ramp(self, preset: dict[str, Any], previous: dict[str, Any]) -> None:
+        # Новый переход отменяет незаконченный.
+        if self._ramp and not self._ramp.done():
+            self._ramp.cancel()
+        self._ramp = asyncio.ensure_future(self._apply(preset, previous))
 
     def stop(self) -> None:
+        self._stopping = True
         if self._session and self._loop:
             try:
                 asyncio.run_coroutine_threadsafe(self._session.stop(), self._loop).result(timeout=1.0)

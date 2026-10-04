@@ -18,6 +18,7 @@ from ..clock import Clock
 from ..controller import Controller
 from ..journal import Journal
 from ..media.asr import Transcript
+from ..registry import MusicStyle
 from .providers import Brain, encode_jpeg
 
 
@@ -128,8 +129,22 @@ class BrainScheduler:
             lines.append(f"Подсказка зала: «{c.state.scene_hint}».")
         if self.note:
             lines.append(f"Твоя заметка о сцене: {self.note}")
-        playing = sorted({e for _, e, _, _ in c.engine.mixer.playing})
-        lines.append("Сейчас играет: " + (", ".join(playing) if playing else "ничего") + ".")
+        playing = sorted({e for _, e, _, _ in c.engine.mixer.playing if not e.startswith("music:")})
+        lines.append("Сейчас играют эффекты: " + (", ".join(playing) if playing else "нет") + ".")
+        for ch, title in (("music", "Музыка"), ("ambience", "Атмосфера")):
+            st = c.music.current(ch)
+            if st is None:
+                continue
+            sid = st.id.removeprefix("style:")
+            active = c.music.active.get(ch)
+            if ch == "music" and active is not None and active.owner == "system":
+                lines.append(f"{title}: переходная после «монтажа» ({st.label}) — замени, как только поймёшь сцену.")
+                continue
+            since = f", выбрана {int(now - c.music_t_set)} с назад" if ch == "music" and c.music_t_set else ""
+            lines.append(f"{title}: {st.label} [{sid}]{since}.")
+        past = [sid for scene, sid in c.music_history if scene != c.state.scene_id][-3:]
+        if past:
+            lines.append("Музыка прошлых сцен (не повторяй без причины): " + "; ".join(past) + ".")
         if c.state.armed:
             lines.append(f"Взведено: {c.state.armed.effect}.")
         recent = [p for p in c.played if now - p.t < 60]
@@ -202,6 +217,13 @@ class BrainScheduler:
             return
         if typ == "scene_end":
             c.ai_scene_end(**kw)
+            return
+        if typ == "music":
+            parts = [a.get(k) for k in ("genre", "mood", "energy", "tempo")]
+            if not all(parts):
+                self.journal.write("brain_invalid", request_id=rid, action=a, why="неполный стиль музыки")
+                return
+            c.ai_music_style(MusicStyle(*parts, a.get("instrument") or "auto"), t_input_ref=t_ref, **kw)
             return
         if not target:
             self.journal.write("brain_invalid", request_id=rid, action=a, why="нет id")

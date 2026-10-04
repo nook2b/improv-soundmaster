@@ -29,7 +29,8 @@ def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"result": d.result, "blocked_by": d.blocked_by}
     elif cmd == "confirm_kind":
         # Отдельная клавиша на каждый тип подсказки: подтверждается самая свежая подсказка этого типа.
-        items = [s for s in c.state.suggestions.values() if s.kind == msg["kind"]]
+        kinds = {"music", "music_style"} if msg["kind"] == "music" else {msg["kind"]}
+        items = [s for s in c.state.suggestions.values() if s.kind in kinds]
         if items:
             d = c.confirm(max(items, key=lambda s: s.t_created).id)
             return {"result": d.result, "blocked_by": d.blocked_by}

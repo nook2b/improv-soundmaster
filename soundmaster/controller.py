@@ -16,7 +16,7 @@ from .clock import Clock
 from .engine import Engine
 from .journal import Journal
 from .music.director import MusicDirector
-from .registry import Registry
+from .registry import MusicStyle, Registry
 
 
 @dataclass
@@ -93,6 +93,10 @@ class Controller:
         scene_cut_mode: str = "SUGGEST",
         scene_cut_music: str = "stop",
         scene_cut_cooldown: float = 10.0,
+        music_mode: str = "SUGGEST",
+        music_min_hold: float = 30.0,
+        music_first_hold: float = 10.0,
+        music_neutral: str | None = None,
     ):
         self.registry = registry
         self.engine = engine
@@ -109,6 +113,25 @@ class Controller:
         self.scene_cut_mode = scene_cut_mode.upper()  # OFF | SUGGEST | AUTO
         self.scene_cut_music = scene_cut_music  # stop | keep
         self.scene_cut_cooldown = scene_cut_cooldown
+        # Музыка от AI: SUGGEST — подсказка человеку; AUTO — включается сама (решение команды:
+        # музыка автоматическая, эффекты — пока подсказки). min_hold — сколько секунд держать выбор
+        # в сцене, прежде чем AI сможет его сменить (чтобы фон не «прыгал» от реплики к реплике).
+        self.music_mode = music_mode.upper()
+        if self.music_mode not in ("SUGGEST", "AUTO"):
+            raise ValueError(f"music_mode: {music_mode} (SUGGEST | AUTO)")
+        self.music_min_hold = music_min_hold
+        # Первый выбор в сцене модель делает рано, по 1–2 репликам, — его можно поправить быстрее.
+        self.music_first_hold = music_first_hold
+        # Нейтральная переходная музыка после «монтажа» (scene_cut_music: neutral): сцена не стоит
+        # в тишине, пока модель понимает новую сцену; потом генератор плавно перетекает в выбранное.
+        self.music_neutral = MusicStyle.parse(music_neutral) if music_neutral else None
+        if self.music_neutral and registry.vocabulary is not None:
+            bad = registry.vocabulary.validate(self.music_neutral)
+            if bad:
+                raise ValueError(f"нейтральная музыка {music_neutral}: {bad}")
+        self.music_t_set: float | None = None  # когда в этой сцене AI выбрал музыку
+        self.music_picks = 0  # сколько раз AI выбирал музыку в этой сцене
+        self.music_history: deque[tuple[int, str]] = deque(maxlen=8)  # (сцена, стиль) — для разнообразия
         self.new_scene_listeners: list = []  # вызываются с (scene_id, source) — например, сброс контекста AI
         self._ids = itertools.count(1)
         self.state.t_scene_start = clock.now()
@@ -185,6 +208,11 @@ class Controller:
         if s.kind == "new_scene":
             self.new_scene(keep_music=self.scene_cut_music == "keep", source="confirmed_scene_cut")
             return self._log(Decision("confirmed", "new_scene", suggestion_id=s.id), "manual", "confirm")
+        if s.kind == "music_style":
+            self.music.set_style(MusicStyle.parse(s.target.removeprefix("style:")), owner="manual")
+            self.music_t_set = now
+            return self._log(Decision("confirmed", s.target, suggestion_id=s.id), "manual", "confirm",
+                             request_id=s.request_id)
         if s.kind == "music":
             self.music.set_state(s.target, owner="manual")
             return self._log(Decision("confirmed", s.target, suggestion_id=s.id), "manual", "confirm",
@@ -219,7 +247,17 @@ class Controller:
         self.scene_end_count = 0
         self.scene_end_pause_until = 0.0
         if not keep_music:
-            self.music.stop_all()
+            self.music_t_set = None
+            self.music_picks = 0
+            neutral = (self.scene_cut_music == "neutral" and self.music_neutral is not None
+                       and self.registry.vocabulary is not None
+                       and self.music_mode == "AUTO" and self.state.automation_enabled)
+            if neutral:
+                # Атмосфера прошлого места гаснет, музыка — плавно в нейтральную (без паузы).
+                self.music.stop("ambience")
+                self.music.set_style(self.music_neutral, owner="system")
+            else:
+                self.music.stop_all()
         self.engine.mixer.stop(owner="ai", fade=0.3)
         self.journal.write("operator" if source == "manual" else "system", action="new_scene",
                            scene_id=self.state.scene_id, hint=hint, keep_music=keep_music, source=source)
@@ -456,10 +494,31 @@ class Controller:
         vid = self._play(effect_id, "ai", "ai", {"request_id": request_id})
         return log(Decision("played", effect_id, voice_id=vid))
 
+    def _music_gate(self, channel: str, target: str, *, scene_id: int, connection_id: int,
+                    t_input_ref: float) -> str | None:
+        """Общие проверки музыки от AI. None — можно; иначе причина отказа."""
+        now = self.clock.now()
+        if scene_id != self.state.scene_id or connection_id != self.state.connection_id:
+            return "stale"
+        if now - t_input_ref > self.limits.late_drop.get("background", 5.0):
+            return "late"
+        chosen = self.music.current(channel)
+        if chosen and chosen.id == target:
+            return "already_playing"
+        if any(s.target == target for s in self.state.suggestions.values()):
+            return "already_suggested"
+        active = self.music.active.get(channel)
+        if active and active.owner == "manual":
+            return "manual_music"  # человек выбрал сам — AI не перебивает до новой сцены
+        hold = self.music_first_hold if self.music_picks <= 1 else self.music_min_hold
+        if (channel == "music" and chosen and self.music_t_set is not None
+                and now - self.music_t_set < hold):
+            return "min_hold"
+        return None
+
     def ai_music(self, state_id: str, *, scene_id: int, connection_id: int, t_input_ref: float,
                  request_id: str | None = None, reason: str = "", confidence: str | None = None) -> Decision:
-        """Фон от AI на этапах 0–3 — только подсказка технику."""
-        now = self.clock.now()
+        """Фон-состояние из реестра (атмосфера или музыка-файл): AUTO — сразу, SUGGEST — подсказка."""
         extra = {"request_id": request_id, "reason": reason, "confidence": confidence}
 
         def log(d: Decision) -> Decision:
@@ -467,17 +526,59 @@ class Controller:
 
         if state_id not in self.registry.music_states:
             return log(Decision("blocked", state_id, "unknown_music_state"))
-        if scene_id != self.state.scene_id or connection_id != self.state.connection_id:
-            return log(Decision("blocked", state_id, "stale"))
-        if now - t_input_ref > self.limits.late_drop.get("background", 5.0):
+        channel = self.registry.music_states[state_id].channel
+        why = self._music_gate(channel, state_id, scene_id=scene_id, connection_id=connection_id,
+                               t_input_ref=t_input_ref)
+        if why == "late":
             return log(Decision("late_dropped", state_id))
-        active = self.music.active.get(self.registry.music_states[state_id].channel)
-        if active and active.state.id == state_id:
-            return log(Decision("deduped", state_id, "already_playing"))
-        if any(s.target == state_id for s in self.state.suggestions.values()):
-            return log(Decision("deduped", state_id, "already_suggested"))
-        s = self._suggest("music", state_id, reason, confidence, request_id, ttl=self.limits.suggestion_ttl * 2)
-        return log(Decision("suggested", state_id, "background_suggest_only", s.id))
+        if why in ("already_playing", "already_suggested"):
+            return log(Decision("deduped", state_id, why))
+        if why:
+            return log(Decision("blocked", state_id, why))
+        if self.music_mode != "AUTO" or not self.state.automation_enabled:
+            why_s = "background_suggest_only" if self.music_mode != "AUTO" else "automation_off"
+            s = self._suggest("music", state_id, reason, confidence, request_id, ttl=self.limits.suggestion_ttl * 2)
+            return log(Decision("suggested", state_id, why_s, s.id))
+        result = self.music.set_state(state_id, owner="ai")
+        if channel == "music":
+            self.music_t_set = self.clock.now()
+            self.music_picks += 1
+        return log(Decision("started", state_id, "no_source" if result == "no_source" else None))
+
+    def ai_music_style(self, style: MusicStyle, *, scene_id: int, connection_id: int, t_input_ref: float,
+                       request_id: str | None = None, reason: str = "", confidence: str | None = None) -> Decision:
+        """Музыка сцены из словаря (жанр/настроение/энергия/темп) — для генератора."""
+        extra = {"request_id": request_id, "reason": reason, "confidence": confidence}
+
+        def log(d: Decision) -> Decision:
+            return self._log(d, "ai", "music_style", **extra)
+
+        vocab = self.registry.vocabulary
+        if vocab is None:
+            return log(Decision("blocked", style.id, "no_vocabulary"))
+        bad = vocab.validate(style)
+        if bad:
+            return log(Decision("blocked", style.id, bad))
+        target = f"style:{style.id}"
+        why = self._music_gate("music", target, scene_id=scene_id, connection_id=connection_id,
+                               t_input_ref=t_input_ref)
+        if why == "late":
+            return log(Decision("late_dropped", style.id))
+        if why in ("already_playing", "already_suggested"):
+            return log(Decision("deduped", style.id, why))
+        if why:
+            return log(Decision("blocked", style.id, why))
+        if self.music_mode != "AUTO" or not self.state.automation_enabled:
+            # Подсказка хранит стиль как строку — при подтверждении он собирается заново.
+            why_s = "background_suggest_only" if self.music_mode != "AUTO" else "automation_off"
+            s = self._suggest("music_style", target, reason or vocab.label(style), confidence, request_id,
+                              ttl=self.limits.suggestion_ttl * 2)
+            return log(Decision("suggested", style.id, why_s, s.id))
+        result = self.music.set_style(style, owner="ai")
+        self.music_t_set = self.clock.now()
+        self.music_picks += 1
+        self.music_history.append((self.state.scene_id, style.id))
+        return log(Decision("started", style.id, "no_source" if result == "no_source" else None))
 
     def ai_scene_end(self, *, scene_id: int, connection_id: int, request_id: str | None = None,
                      reason: str = "", confidence: str | None = None) -> Decision:

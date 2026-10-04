@@ -86,3 +86,36 @@ def test_test_tone_generator_streams_and_updates(system):
     assert gen.preset["root_hz"] == 110
     c.manual_music(None)
     gen.stop()
+
+
+def test_vocabulary_builds_generator_preset(registry):
+    from soundmaster.registry import MusicStyle
+
+    st = registry.music_style_state(MusicStyle("noir", "tense", "low", "slow"))
+    assert st.channel == "music" and st.file == registry.music_states["tension"].file
+    assert [p["text"] for p in st.generator["prompts"]][0].startswith("film noir")
+    assert "bpm" not in st.generator["config"] and st.generator["config"]["density"] == 0.2
+    assert any(p["text"] == "slow tempo" for p in st.generator["prompts"])  # темп словами — плавная смена
+    assert registry.vocabulary.validate(MusicStyle("noir", "x", "low", "slow")) == "unknown_mood"
+
+
+def test_vocabulary_fallback_must_exist(tmp_path):
+    p = tmp_path / "r.yaml"
+    p.write_text("music_vocabulary:\n  genres: {a: {}}\n  moods: {b: {fallback: nope}}\n"
+                 "  energy: {c: {}}\n  tempo: {d: {}}\n", encoding="utf-8")
+    with pytest.raises(RegistryError):
+        load_registry(p)
+
+
+def test_style_without_any_source_is_still_tracked(system):
+    """Нет генератора и нет файла настроения — тишина, но выбор помнится (без повторов от модели)."""
+    from soundmaster.registry import MusicStyle
+
+    make, engine, mixer, journal = system
+    c = make()
+    s = MusicStyle("comedy", "happy", "medium", "fast")  # у «радости» нет резервного файла
+    assert c.music.set_style(s) == "no_source"
+    assert c.music.current("music").id == f"style:{s.id}"
+    assert c.music.set_style(s) == "already_playing"
+    c.music.stop("music")
+    assert c.music.current("music") is None

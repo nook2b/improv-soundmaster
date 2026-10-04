@@ -180,3 +180,134 @@ def test_ai_music_only_suggests(system, clock):
     assert d.result == "suggested"
     assert c.confirm(d.suggestion_id).result == "confirmed"
     assert c.music.active["music"].state.id == "romantic"
+
+
+# ---- автономная музыка ---------------------------------------------------------------------
+from soundmaster.registry import MusicStyle  # noqa: E402
+
+NOIR = MusicStyle("noir", "tense", "low", "slow")
+COMEDY = MusicStyle("comedy", "playful", "medium", "fast")
+
+
+def style(c, s, clock, **kw):
+    kw.setdefault("t_input_ref", clock.now())
+    return c.ai_music_style(s, scene_id=c.state.scene_id, connection_id=c.state.connection_id, **kw)
+
+
+def auto(system):
+    make = system[0]
+    c = make()
+    c.music_mode = "AUTO"
+    return c
+
+
+def test_music_style_auto_starts_without_human_even_without_clean_feed(system, clock):
+    c = auto(system)
+    d = style(c, NOIR, clock)
+    assert d.result == "started"
+    assert c.music.current("music").id == "style:noir/tense/low/slow"
+    assert c.music.active["music"].owner == "ai"
+    assert style(c, NOIR, clock).result == "deduped"
+
+
+def test_music_style_min_hold_then_change(system, clock):
+    c = auto(system)
+    style(c, NOIR, clock)
+    clock.advance(5)
+    d = style(c, COMEDY, clock)
+    assert (d.result, d.blocked_by) == ("blocked", "min_hold")
+    clock.advance(c.music_min_hold)
+    assert style(c, COMEDY, clock).result == "started"
+    assert c.music.current("music").id.endswith("comedy/playful/medium/fast")
+
+
+def test_new_scene_stops_music_and_allows_immediate_choice(system, clock):
+    c = auto(system)
+    style(c, NOIR, clock)
+    clock.advance(2)
+    c.new_scene(source="video")
+    assert c.music.current("music") is None
+    assert style(c, COMEDY, clock).result == "started"
+
+
+def neutral_auto(system):
+    c = auto(system)
+    c.scene_cut_music = "neutral"
+    c.scene_cut_mode = "AUTO"
+    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow")
+    return c
+
+
+def test_scene_cut_goes_to_neutral_then_model_choice_replaces_it_at_once(system, clock):
+    c = neutral_auto(system)
+    c.ai_music("restaurant", scene_id=1, connection_id=0, t_input_ref=clock.now())
+    style(c, NOIR, clock)
+    clock.advance(c.scene_cut_cooldown + 1)
+    assert c.scene_cut("video").result == "started"
+    cur = c.music.current("music")
+    assert cur.id == "style:underscore/calm/low/slow" and c.music.active["music"].owner == "system"
+    assert c.music.current("ambience") is None  # атмосфера прошлого места гаснет
+    clock.advance(1)
+    assert style(c, COMEDY, clock).result == "started"  # нейтральную не держим
+
+
+def test_first_pick_in_scene_can_be_corrected_sooner(system, clock):
+    c = neutral_auto(system)
+    style(c, NOIR, clock)
+    clock.advance(c.music_first_hold + 0.5)
+    assert style(c, COMEDY, clock).result == "started"  # первый выбор — держится только 10 с
+    clock.advance(c.music_first_hold + 0.5)
+    d = style(c, MusicStyle("drama", "sad", "low", "slow"), clock)
+    assert (d.result, d.blocked_by) == ("blocked", "min_hold")  # дальше — 30 с
+    assert [sid for _, sid in c.music_history] == [NOIR.id, COMEDY.id]
+
+
+def test_music_style_with_solo_instrument(system, clock):
+    c = auto(system)
+    s = MusicStyle("folk", "tender", "low", "slow", "guitar")
+    assert style(c, s, clock).result == "started"
+    st = c.music.current("music")
+    assert st.id == "style:folk/tender/low/slow/guitar" and "только гитара" in st.label
+    texts = {p["text"]: p["weight"] for p in st.generator["prompts"]}
+    assert any("guitar only" in t for t in texts) and max(texts.values()) == texts[
+        next(t for t in texts if "guitar only" in t)]
+    assert style(c, MusicStyle("folk", "tender", "low", "slow", "kazoo"), clock).blocked_by == "unknown_instrument"
+
+
+def test_music_style_does_not_override_manual_music(system, clock):
+    c = auto(system)
+    c.manual_music("romantic")
+    d = style(c, NOIR, clock)
+    assert (d.result, d.blocked_by) == ("blocked", "manual_music")
+
+
+def test_music_style_suggest_mode_and_confirm(system, clock):
+    c = system[0]()
+    d = style(c, NOIR, clock)
+    assert (d.result, d.blocked_by) == ("suggested", "background_suggest_only")
+    assert c.music.current("music") is None
+    assert c.confirm(d.suggestion_id).result == "confirmed"
+    assert c.music.current("music").id == "style:noir/tense/low/slow"
+
+
+def test_music_style_stop_ai_turns_auto_into_suggestion(system, clock):
+    c = auto(system)
+    style(c, NOIR, clock)
+    c.stop_ai_sound()
+    assert c.music.current("music") is None
+    d = style(c, COMEDY, clock)
+    assert (d.result, d.blocked_by) == ("suggested", "automation_off")
+
+
+def test_music_style_rejects_unknown_words_and_late(system, clock):
+    c = auto(system)
+    assert style(c, MusicStyle("polka", "tense", "low", "slow"), clock).blocked_by == "unknown_genre"
+    clock.advance(10)
+    assert style(c, NOIR, clock, t_input_ref=clock.now() - 10).result == "late_dropped"
+
+
+def test_ambience_auto(system, clock):
+    c = auto(system)
+    d = c.ai_music("restaurant", scene_id=c.state.scene_id, connection_id=c.state.connection_id,
+                   t_input_ref=clock.now())
+    assert d.result == "started" and c.music.current("ambience").id == "restaurant"
