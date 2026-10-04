@@ -20,6 +20,7 @@ def make_app(tmp_path) -> App:
         (ROOT / "config" / "inputs" / "recorder.yaml").read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "registry.yaml").write_text(yaml.safe_dump(reg, allow_unicode=True), encoding="utf-8")
     cfg["recording"]["dir"] = str(tmp_path / "rec")
+    cfg["music"]["generator"] = "none"  # тесты без сети: Lyria не подключаем
     (tmp_path / "show.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
     app = App(tmp_path / "show.yaml", null_audio=True)
     make_test_sounds(app.registry)
@@ -39,7 +40,9 @@ def test_panel_commands_end_to_end(tmp_path):
         app.controller.tick()
         st = app.status()
         assert st["scene_id"] == 2 and st["scene_hint"] == "ресторан"
-        assert st["music"]["active"] == {}
+        # Новая сцена: атмосфера гаснет, музыка — нейтральная переходная (её и выберет модель потом).
+        assert set(st["music"]["active"]) == {"music"}
+        assert st["music"]["active"]["music"]["state"] == "style:" + app.controller.music_neutral.id
         json.dumps(st)  # состояние сериализуется для пульта
         lib = app.describe_library()
         assert all(e["available"] for e in lib["effects"])

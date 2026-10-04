@@ -94,7 +94,8 @@ def test_vocabulary_builds_generator_preset(registry):
     st = registry.music_style_state(MusicStyle("noir", "tense", "low", "slow"))
     assert st.channel == "music" and st.file == registry.music_states["tension"].file
     assert [p["text"] for p in st.generator["prompts"]][0].startswith("film noir")
-    assert st.generator["config"]["bpm"] == 70 and st.generator["config"]["density"] == 0.2
+    assert "bpm" not in st.generator["config"] and st.generator["config"]["density"] == 0.2
+    assert any(p["text"] == "slow tempo" for p in st.generator["prompts"])  # темп словами — плавная смена
     assert registry.vocabulary.validate(MusicStyle("noir", "x", "low", "slow")) == "unknown_mood"
 
 

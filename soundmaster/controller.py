@@ -95,6 +95,8 @@ class Controller:
         scene_cut_cooldown: float = 10.0,
         music_mode: str = "SUGGEST",
         music_min_hold: float = 30.0,
+        music_first_hold: float = 10.0,
+        music_neutral: str | None = None,
     ):
         self.registry = registry
         self.engine = engine
@@ -118,7 +120,18 @@ class Controller:
         if self.music_mode not in ("SUGGEST", "AUTO"):
             raise ValueError(f"music_mode: {music_mode} (SUGGEST | AUTO)")
         self.music_min_hold = music_min_hold
-        self.music_t_set: float | None = None  # когда в этой сцене выбрана музыка
+        # Первый выбор в сцене модель делает рано, по 1–2 репликам, — его можно поправить быстрее.
+        self.music_first_hold = music_first_hold
+        # Нейтральная переходная музыка после «монтажа» (scene_cut_music: neutral): сцена не стоит
+        # в тишине, пока модель понимает новую сцену; потом генератор плавно перетекает в выбранное.
+        self.music_neutral = MusicStyle.parse(music_neutral) if music_neutral else None
+        if self.music_neutral and registry.vocabulary is not None:
+            bad = registry.vocabulary.validate(self.music_neutral)
+            if bad:
+                raise ValueError(f"нейтральная музыка {music_neutral}: {bad}")
+        self.music_t_set: float | None = None  # когда в этой сцене AI выбрал музыку
+        self.music_picks = 0  # сколько раз AI выбирал музыку в этой сцене
+        self.music_history: deque[tuple[int, str]] = deque(maxlen=8)  # (сцена, стиль) — для разнообразия
         self.new_scene_listeners: list = []  # вызываются с (scene_id, source) — например, сброс контекста AI
         self._ids = itertools.count(1)
         self.state.t_scene_start = clock.now()
@@ -234,8 +247,17 @@ class Controller:
         self.scene_end_count = 0
         self.scene_end_pause_until = 0.0
         if not keep_music:
-            self.music.stop_all()
             self.music_t_set = None
+            self.music_picks = 0
+            neutral = (self.scene_cut_music == "neutral" and self.music_neutral is not None
+                       and self.registry.vocabulary is not None
+                       and self.music_mode == "AUTO" and self.state.automation_enabled)
+            if neutral:
+                # Атмосфера прошлого места гаснет, музыка — плавно в нейтральную (без паузы).
+                self.music.stop("ambience")
+                self.music.set_style(self.music_neutral, owner="system")
+            else:
+                self.music.stop_all()
         self.engine.mixer.stop(owner="ai", fade=0.3)
         self.journal.write("operator" if source == "manual" else "system", action="new_scene",
                            scene_id=self.state.scene_id, hint=hint, keep_music=keep_music, source=source)
@@ -488,8 +510,9 @@ class Controller:
         active = self.music.active.get(channel)
         if active and active.owner == "manual":
             return "manual_music"  # человек выбрал сам — AI не перебивает до новой сцены
+        hold = self.music_first_hold if self.music_picks <= 1 else self.music_min_hold
         if (channel == "music" and chosen and self.music_t_set is not None
-                and now - self.music_t_set < self.music_min_hold):
+                and now - self.music_t_set < hold):
             return "min_hold"
         return None
 
@@ -519,6 +542,7 @@ class Controller:
         result = self.music.set_state(state_id, owner="ai")
         if channel == "music":
             self.music_t_set = self.clock.now()
+            self.music_picks += 1
         return log(Decision("started", state_id, "no_source" if result == "no_source" else None))
 
     def ai_music_style(self, style: MusicStyle, *, scene_id: int, connection_id: int, t_input_ref: float,
@@ -552,6 +576,8 @@ class Controller:
             return log(Decision("suggested", style.id, why_s, s.id))
         result = self.music.set_style(style, owner="ai")
         self.music_t_set = self.clock.now()
+        self.music_picks += 1
+        self.music_history.append((self.state.scene_id, style.id))
         return log(Decision("started", style.id, "no_source" if result == "no_source" else None))
 
     def ai_scene_end(self, *, scene_id: int, connection_id: int, request_id: str | None = None,

@@ -11,7 +11,7 @@ from typing import Any
 from ..registry import Registry
 
 ACTION_TYPES = ("effect", "arm", "background", "music", "scene_end", "note")
-STYLE_FIELDS = ("genre", "mood", "energy", "tempo")
+STYLE_FIELDS = ("genre", "mood", "energy", "tempo", "instrument")
 CONFIDENCE = ("low", "medium", "high")
 
 SYSTEM_PROMPT = """\
@@ -54,11 +54,16 @@ BACKGROUND_RULES = """\
 
 MUSIC_RULES = """\
 - music — ГЛАВНЫЙ твой инструмент: музыка сцены для генератора. Выбери по одному слову из
-  каждого раздела МУЗЫКИ (genre, mood, energy, tempo; id оставь пустым). Музыка звучит сама,
-  без человека. Выбирай её в каждой сцене, как только жанр и настроение понятны (обычно после
-  2–4 реплик). После «монтажа» (новая сцена) прошлая музыка гаснет — выбери новую.
-  Меняй музыку только при явном повороте настроения, не от каждой реплики. Под тихий диалог —
-  energy low; если сцена держится на словах и настроение неясно — underscore, calm, low.
+  каждого раздела МУЗЫКИ (genre, mood, energy, tempo, instrument; id оставь пустым). Музыка
+  звучит сама, без человека, и меняется плавно.
+  После «монтажа» сразу играет нейтральная переходная музыка — замени её, как только появится
+  первый признак сцены (место, жанр, тон — часто уже по 1–2 репликам). Первый выбор можно
+  уточнить через 10 с; дальше меняй только при явном повороте настроения, не от каждой реплики.
+  Под тихий диалог — energy low.
+  instrument: обычно auto (как принято в жанре). Для разнообразия примерно в каждой 3–4-й сцене
+  выбирай один инструмент или маленький состав — особенно для тихих, личных, простых сцен
+  (например, только гитара у костра, только фортепиано в грустной сцене). Не повторяй жанр и
+  состав прошлых сцен без причины.
 - background — только атмосфера МЕСТА со своим звуком (список ФОН), и только если это место
   прямо названо или показано в сцене: ресторан — актёры в кафе/ресторане/баре; дождь — актёры
   говорят о дожде или грозе. Не используй атмосферу для настроения — для этого есть music.
@@ -81,9 +86,12 @@ def library_text(registry: Registry) -> str:
         lines.append(f"- {m.id} — {m.label} ({kind})")
     v = registry.vocabulary
     if v is not None:
-        lines.append("\nМУЗЫКА (music: genre / mood / energy / tempo):")
+        lines.append("\nМУЗЫКА (music: genre / mood / energy / tempo / instrument):")
         for name, table in (("genre", v.genres), ("mood", v.moods), ("energy", v.energy), ("tempo", v.tempo)):
             lines.append(f"{name}: " + "; ".join(f"{i.id} — {i.label}" for i in table.values()))
+        if v.instruments:
+            lines.append("instrument: auto — как принято в жанре; "
+                         + "; ".join(f"{i.id} — {i.label}" for i in v.instruments.values()))
     return "\n".join(lines)
 
 
@@ -99,7 +107,10 @@ def style_enums(registry: Registry) -> dict[str, list[str]]:
     v = registry.vocabulary
     if v is None:
         return {}
-    return {"genre": list(v.genres), "mood": list(v.moods), "energy": list(v.energy), "tempo": list(v.tempo)}
+    out = {"genre": list(v.genres), "mood": list(v.moods), "energy": list(v.energy), "tempo": list(v.tempo)}
+    if v.instruments:
+        out["instrument"] = ["auto"] + list(v.instruments)
+    return out
 
 
 def allowed_ids(registry: Registry) -> list[str]:

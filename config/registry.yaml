@@ -192,7 +192,21 @@ music_vocabulary:
     low:    { label: "тихо", config: { density: 0.2, brightness: 0.3 } }
     medium: { label: "средне", config: { density: 0.45, brightness: 0.5 } }
     high:   { label: "мощно", config: { density: 0.75, brightness: 0.65 } }
+  # Состав: по умолчанию (auto) — как принято в жанре; иногда для разнообразия — один инструмент
+  # или маленький состав (например, только гитара на тихую сцену).
+  instruments:
+    guitar:      { label: "только гитара", text: "solo acoustic guitar only, fingerpicking, no other instruments" }
+    electric:    { label: "только электрогитара", text: "solo clean electric guitar only, reverb, no other instruments" }
+    piano:       { label: "только фортепиано", text: "solo piano only, no other instruments" }
+    strings:     { label: "струнный квартет", text: "string quartet only, no drums" }
+    accordion:   { label: "только аккордеон", text: "solo accordion only, no other instruments" }
+    synth:       { label: "только синтезатор", text: "solo analog synthesizer pads only, no drums" }
+    percussion:  { label: "только ударные", text: "percussion only, hand drums and shakers, no melody" }
+    musicbox:    { label: "музыкальная шкатулка", text: "music box and celesta only, delicate" }
+    brass:       { label: "медные духовые", text: "small brass ensemble only, trumpet and trombone" }
+    winds:       { label: "флейта/кларнет", text: "solo woodwinds only, flute and clarinet" }
+  # Темп — словами, а не bpm: смена bpm в Lyria требует сброса и звучит обрывом, а слова перетекают плавно.
   tempo:
-    slow:   { label: "медленно", config: { bpm: 70 } }
-    medium: { label: "умеренно", config: { bpm: 100 } }
-    fast:   { label: "быстро", config: { bpm: 135 } }
+    slow:   { label: "медленно", text: "slow tempo" }
+    medium: { label: "умеренно", text: "moderate tempo" }
+    fast:   { label: "быстро", text: "fast tempo, driving rhythm" }

@@ -89,22 +89,24 @@ class VocabItem:
 
 @dataclass
 class MusicStyle:
-    """Музыка сцены, собранная из словаря: жанр + настроение + энергия + темп."""
+    """Музыка сцены, собранная из словаря: жанр + настроение + энергия + темп (+ инструменты)."""
 
     genre: str
     mood: str
     energy: str
     tempo: str
+    instrument: str = "auto"  # auto — как в жанре; иначе сольный инструмент / состав из словаря
 
     @property
     def id(self) -> str:
-        return f"{self.genre}/{self.mood}/{self.energy}/{self.tempo}"
+        base = f"{self.genre}/{self.mood}/{self.energy}/{self.tempo}"
+        return base if self.instrument == "auto" else f"{base}/{self.instrument}"
 
     @classmethod
     def parse(cls, style_id: str) -> "MusicStyle":
         parts = style_id.split("/")
-        if len(parts) != 4:
-            raise RegistryError(f"стиль музыки {style_id!r}: нужно жанр/настроение/энергия/темп")
+        if len(parts) not in (4, 5):
+            raise RegistryError(f"стиль музыки {style_id!r}: нужно жанр/настроение/энергия/темп[/инструменты]")
         return cls(*parts)
 
 
@@ -116,6 +118,7 @@ class MusicVocabulary:
     moods: dict[str, VocabItem]
     energy: dict[str, VocabItem]
     tempo: dict[str, VocabItem]
+    instruments: dict[str, VocabItem] = field(default_factory=dict)  # auto — всегда разрешено
     fade_in: float = 3.0
     fade_out: float = 3.0
     gain_db: float = -8.0
@@ -125,18 +128,28 @@ class MusicVocabulary:
                                    ("energy", style.energy, self.energy), ("tempo", style.tempo, self.tempo)):
             if value not in table:
                 return f"unknown_{name}"
+        if style.instrument != "auto" and style.instrument not in self.instruments:
+            return "unknown_instrument"
         return None
 
     def label(self, style: MusicStyle) -> str:
-        return ", ".join(t[v].label for t, v in ((self.genres, style.genre), (self.moods, style.mood),
-                                                 (self.energy, style.energy), (self.tempo, style.tempo)))
+        parts = [t[v].label for t, v in ((self.genres, style.genre), (self.moods, style.mood),
+                                         (self.energy, style.energy), (self.tempo, style.tempo))]
+        if style.instrument != "auto":
+            parts.insert(1, self.instruments[style.instrument].label)
+        return ", ".join(parts)
 
     def preset(self, style: MusicStyle) -> dict[str, Any]:
-        """Пресет генератора: два описания (жанр, настроение) и параметры энергии/темпа."""
+        """Пресет генератора: описания (жанр, настроение, темп — у кого есть text) и параметры."""
         g, m, e, t = self.genres[style.genre], self.moods[style.mood], self.energy[style.energy], self.tempo[style.tempo]
-        prompts = [{"text": x.text, "weight": 1.0} for x in (g, m) if x.text]
+        parts = [(g, 1.0), (m, 1.0), (e, 0.5), (t, 0.5)]
+        if style.instrument != "auto":
+            # Сольный инструмент/состав: жанр остаётся «манерой», состав задаёт инструмент (вес больше,
+            # иначе Lyria добавляет инструменты из описания жанра).
+            parts = [(g, 0.5), (self.instruments[style.instrument], 1.5), (m, 1.0), (e, 0.5), (t, 0.5)]
+        prompts = [{"text": x.text, "weight": w} for x, w in parts if x.text]
         config: dict[str, Any] = {}
-        for x in (g, m, e, t):
+        for x, _ in parts:
             config.update(x.config)
         return {"prompts": prompts, "config": config}
 
@@ -311,9 +324,13 @@ def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState])
     if not raw:
         return None
     tables: dict[str, dict[str, VocabItem]] = {}
-    for key in ("genres", "moods", "energy", "tempo"):
+    for key in ("genres", "moods", "energy", "tempo", "instruments"):
         items = raw.get(key) or {}
+        if key == "instruments" and not items:
+            tables[key] = {}
+            continue
         _require(isinstance(items, dict) and items, f"music_vocabulary.{key}: нужен непустой словарь")
+        _require(key != "instruments" or "auto" not in items, "music_vocabulary.instruments: id auto зарезервирован")
         table = {}
         for iid, it in items.items():
             it = it or {}

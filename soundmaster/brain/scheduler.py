@@ -135,9 +135,16 @@ class BrainScheduler:
             st = c.music.current(ch)
             if st is None:
                 continue
-            since = f", выбрана {int(now - c.music_t_set)} с назад" if ch == "music" and c.music_t_set else ""
             sid = st.id.removeprefix("style:")
+            active = c.music.active.get(ch)
+            if ch == "music" and active is not None and active.owner == "system":
+                lines.append(f"{title}: переходная после «монтажа» ({st.label}) — замени, как только поймёшь сцену.")
+                continue
+            since = f", выбрана {int(now - c.music_t_set)} с назад" if ch == "music" and c.music_t_set else ""
             lines.append(f"{title}: {st.label} [{sid}]{since}.")
+        past = [sid for scene, sid in c.music_history if scene != c.state.scene_id][-3:]
+        if past:
+            lines.append("Музыка прошлых сцен (не повторяй без причины): " + "; ".join(past) + ".")
         if c.state.armed:
             lines.append(f"Взведено: {c.state.armed.effect}.")
         recent = [p for p in c.played if now - p.t < 60]
@@ -216,7 +223,7 @@ class BrainScheduler:
             if not all(parts):
                 self.journal.write("brain_invalid", request_id=rid, action=a, why="неполный стиль музыки")
                 return
-            c.ai_music_style(MusicStyle(*parts), t_input_ref=t_ref, **kw)
+            c.ai_music_style(MusicStyle(*parts, a.get("instrument") or "auto"), t_input_ref=t_ref, **kw)
             return
         if not target:
             self.journal.write("brain_invalid", request_id=rid, action=a, why="нет id")

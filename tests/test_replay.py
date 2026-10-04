@@ -158,7 +158,7 @@ def test_cli_replay_by_url(scene_video, tmp_path, monkeypatch):
 
 
 def test_replay_music_auto_and_scene_cut_changes_music(scene_video, tmp_path):
-    """Музыка от AI включается сама; «монтаж» в AUTO начинает новую сцену и гасит её."""
+    """Музыка от AI включается сама; «монтаж» в AUTO начинает новую сцену, музыка — в нейтральную."""
     music = {"type": "music", "id": None, "reason": "фотограф", "confidence": "high",
              "genre": "comedy", "mood": "playful", "energy": "medium", "tempo": "medium"}
     summary, j, rp = run(scene_video, tmp_path, rules=[("птичка", music)], scene_cut_mode="AUTO")
@@ -167,6 +167,8 @@ def test_replay_music_auto_and_scene_cut_changes_music(scene_video, tmp_path):
     assert ("scene_cut", "new_scene", "started") in dec
     t_music = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "music_style")
     t_cut = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "scene_cut")
-    stops = [r for r in j if r["kind"] == "music" and r["action"] == "stop"]
-    assert t_music < t_cut and stops and stops[-1]["t"] >= t_cut
-    assert rp.music.current("music") is None
+    assert t_music < t_cut
+    neutral = rp.controller.music_neutral
+    assert rp.music.current("music").id == f"style:{neutral.id}"
+    assert rp.music.active["music"].owner == "system"
+    assert any(r["kind"] == "music" and r.get("state") == f"style:{neutral.id}" and r["t"] >= t_cut for r in j)
