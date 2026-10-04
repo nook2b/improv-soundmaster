@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Пульт звукаря</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #111418; --panel: #1b2027; --line: #2c333d; --text: #e8ecf1; --muted: #8b95a3;
@@ -26,7 +27,7 @@
   button.missing { opacity: .4; }
   button .key { float: right; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
   button .sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
-  .ctl { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .ctl button { min-height: 44px; }
   .danger { background: #3a1416; border-color: var(--danger); }
   .sugg { display: grid; gap: 6px; }
@@ -38,6 +39,7 @@
   .meter { display: grid; grid-template-columns: 180px 1fr 60px; gap: 8px; align-items: center; }
   .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--ok); }
+  select { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
   input[type=text] { font: inherit; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); min-width: 220px; }
   .log { font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 140px; overflow: auto; }
   .help { font-size: 12px; color: var(--muted); }
@@ -58,6 +60,13 @@
   <section>
     <h2>Подсказки AI</h2>
     <div class="sugg" id="sugg"><div class="empty">Нет подсказок</div></div>
+  </section>
+
+  <section id="armedBox" style="display:none">
+    <h2>Взведено</h2>
+    <div class="sugg"><div class="item"><span class="grow" id="armedText"></span>
+      <button id="fireBtn">Сработать <span class="key">F</span></button>
+      <button id="disarmBtn">Снять</button></div></div>
   </section>
 
   <section>
@@ -84,7 +93,21 @@
       <button id="stopAll" class="danger">Стоп всё <span class="key">Esc</span></button>
       <button id="mark">Отметка события <span class="key">.</span></button>
     </div>
-    <p class="help">Подтвердить подсказку: эффект — <b>S</b>, музыка — <b>M</b>, отбивка — <b>B</b>. Пробел не используется.</p>
+    <p class="help">Подтвердить подсказку: эффект — <b>S</b>, музыка — <b>M</b>, отбивка — <b>B</b>; взведённый эффект — <b>F</b>. Пробел не используется.</p>
+  </section>
+
+  <section>
+    <h2>Слух и AI</h2>
+    <div class="ctl">
+      <span class="pill" id="listenPill">Слух выключен</span>
+      <span class="pill" id="brainPill">Модель выключена</span>
+      <button id="brainBtn" style="display:none">Модель: вкл</button>
+      <label class="pill">Монтаж:
+        <select id="cutMode"><option>OFF</option><option>SUGGEST</option><option>AUTO</option></select>
+      </label>
+    </div>
+    <div class="help" id="note"></div>
+    <div class="log" id="heard" style="margin-top:6px"></div>
   </section>
 
   <section>
@@ -118,7 +141,8 @@ async function loadLibrary() {
   lib = await (await fetch("/library")).json();
   const eff = $("effects"); eff.innerHTML = "";
   for (const e of lib.effects) {
-    const sub = (e.risk === "loud" ? "только вручную · " : "") + ({sync: "синхронный", context: "по событию", background: "фон"}[e["class"]] || "");
+    const kind = e.channel === "sting" ? "отбивка" : ({sync: "синхронный", context: "по событию", background: "фон"}[e["class"]] || "");
+    const sub = (e.risk === "loud" ? "только вручную · " : "") + kind;
     const b = button(e.label, e.available ? sub : "нет файла", e.hotkey, (e.risk === "loud" ? "loud " : "") + (e.available ? "" : "missing"));
     b.dataset.effect = e.id;
     b.onclick = () => { flash(b); send({ cmd: "play", effect: e.id }); };
@@ -169,6 +193,28 @@ function render(s) {
     row.append(ok, no); box.appendChild(row);
   }
 
+  const ab = $("armedBox");
+  if (s.armed) {
+    ab.style.display = "";
+    const name = (lib.effects.find(e => e.id === s.armed.effect) || {}).label || s.armed.effect;
+    $("armedText").innerHTML = `<b>${esc(name)}</b> · взвёл: ${esc(s.armed.source)}${s.armed.shadow ? " · теневой режим" : ""} · ${s.armed.ttl} с`;
+  } else ab.style.display = "none";
+
+  const L = s.listen || {};
+  const asrState = { loading: " · загрузка модели…", error: " · ошибка" }[L.asr_state] || "";
+  $("listenPill").textContent = L.enabled ? (L.asr ? `Слух: ${L.asr}${asrState}${L.speech ? " · речь" : ""}` : "Слух: без распознавания") : "Слух выключен";
+  $("listenPill").className = "pill " + (L.error || L.camera_error ? "bad" : (L.enabled ? "ok" : ""));
+  if (L.error || L.camera_error) $("listenPill").textContent += " · " + (L.error || L.camera_error);
+  const B = L.brain;
+  if (B) {
+    $("brainPill").textContent = `${B.provider}:${B.model} · ${B.requests} запр. · $${B.cost}` + (B.latency_p50 ? ` · ${B.latency_p50} с` : "") + (B.errors ? ` · ошибок ${B.errors}` : "") + (B.stopped_by_budget ? " · БЮДЖЕТ ИСЧЕРПАН" : "");
+    $("brainPill").className = "pill " + (B.stopped_by_budget || B.errors ? "warn" : (B.enabled ? "ok" : ""));
+    $("brainBtn").style.display = ""; $("brainBtn").textContent = B.enabled ? "Модель: выключить" : "Модель: включить";
+    $("note").textContent = B.note ? "Модель думает, что это: " + B.note : "";
+  } else { $("brainPill").textContent = "Модель выключена"; $("brainBtn").style.display = "none"; }
+  $("heard").textContent = (L.recent || []).slice().reverse().map(r => r.text).join("\n");
+  if (document.activeElement !== $("cutMode")) $("cutMode").value = s.scene_cut_mode;
+
   const m = $("meters"); m.innerHTML = "";
   if (!s.input.enabled) m.innerHTML = '<div class="help">Вход выключен</div>';
   if (s.input.error) m.innerHTML = `<div class="help" style="color:var(--danger)">Вход не открылся: ${esc(s.input.error)}. Пульт работает, запись входа не идёт.</div>`;
@@ -196,14 +242,19 @@ $("stopAll").onclick = () => send({ cmd: "stop_all" });
 $("musicStop").onclick = () => send({ cmd: "music", state: null });
 $("gen").onclick = () => send({ cmd: "generator", enabled: !(state && state.music.generator_enabled) });
 $("mark").onclick = () => { flash($("mark")); send({ cmd: "mark" }); };
+$("fireBtn").onclick = () => send({ cmd: "fire" });
+$("disarmBtn").onclick = () => send({ cmd: "disarm" });
+$("brainBtn").onclick = () => send({ cmd: "brain", enabled: !(state && state.listen.brain && state.listen.brain.enabled) });
+$("cutMode").onchange = (e) => send({ cmd: "scene_cut_mode", mode: e.target.value });
 
 document.addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "SELECT") return;
   if (ev.target.tagName === "INPUT") { if (ev.key === "Enter") $("newScene").click(); return; }
   if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
   const k = ev.key.toLowerCase();
   const actions = {
     escape: () => $("stopAll").click(), x: () => $("stopAi").click(), n: () => $("newScene").click(),
-    a: () => $("autoBtn").click(), ".": () => $("mark").click(),
+    a: () => $("autoBtn").click(), ".": () => $("mark").click(), f: () => $("fireBtn").click(),
     s: () => send({ cmd: "confirm_kind", kind: "effect" }),
     m: () => send({ cmd: "confirm_kind", kind: "music" }),
     b: () => send({ cmd: "confirm_kind", kind: "scene_end" }),

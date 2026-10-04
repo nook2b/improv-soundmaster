@@ -5,6 +5,8 @@
   python -m soundmaster devices        — список аудиоустройств (имена для config)
   python -m soundmaster check          — проверить конфигурацию и файлы
   python -m soundmaster make-test-sounds — создать тестовые звуки для всех файлов реестра
+  python -m soundmaster replay ЗАПИСЬ.mp4 — прогнать запись через систему (теневой режим) + отчёт
+  python -m soundmaster cameras        — список камер (имя для config: video.camera)
 """
 
 from __future__ import annotations
@@ -28,6 +30,17 @@ def main(argv: list[str] | None = None) -> int:
     input_help = "профиль входа вместо указанного в show.yaml: mac-mic, brio-mic, recorder или путь к YAML"
     r.add_argument("--input", help=input_help)
     sub.add_parser("devices", help="список аудиоустройств")
+    sub.add_parser("cameras", help="список камер macOS")
+    rp = sub.add_parser("replay", help="прогнать запись через систему (ничего не звучит, всё в отчёт)")
+    rp.add_argument("media", help="видео или аудио файл записи")
+    rp.add_argument("--asr", choices=["mlx", "faster", "off"], help="распознавание (по умолчанию — из show.yaml)")
+    rp.add_argument("--brain", choices=["openai", "gemini", "off"], help="облачная модель (по умолчанию — из show.yaml)")
+    rp.add_argument("--transcript", help="готовая расшифровка вместо распознавания: строки «0:12-0:15 текст»")
+    rp.add_argument("--fast", action="store_true", help="быстрее реального времени (только без облачной модели)")
+    rp.add_argument("--scene-cut", choices=["OFF", "SUGGEST", "AUTO"], help="режим «монтажа» для прогона")
+    rp.add_argument("--clean-feed", action="store_true", help="считать звук чистым (как с петличек)")
+    rp.add_argument("--no-video", action="store_true", help="не анализировать картинку")
+    rp.add_argument("--max-seconds", type=float, help="прогнать только начало записи")
     ch = sub.add_parser("check", help="проверить конфигурацию")
     ch.add_argument("--input", help=input_help)
     m = sub.add_parser("make-test-sounds", help="создать тестовые звуки")
@@ -38,6 +51,35 @@ def main(argv: list[str] | None = None) -> int:
         from .audio.devices import list_devices
 
         print(list_devices())
+        return 0
+
+    if args.cmd == "cameras":
+        from .media.ffmpeg import list_cameras
+
+        print(list_cameras())
+        return 0
+
+    if args.cmd == "replay":
+        from .replay import Replay, ReplayOptions, print_summary
+
+        opts = ReplayOptions(
+            media=Path(args.media).expanduser().resolve(), config=Path(args.config), speed=0 if args.fast else 1,
+            asr=args.asr, brain=args.brain,
+            transcript=Path(args.transcript).expanduser() if args.transcript else None,
+            scene_cut_mode=args.scene_cut, clean_feed=args.clean_feed, video=not args.no_video,
+            max_seconds=args.max_seconds,
+        )
+        if not opts.media.exists():
+            raise FileNotFoundError(f"нет файла {opts.media}")
+        rp = Replay(opts)
+        print(f"Прогон {opts.media.name}: {rp.info.duration:.0f} с, "
+              f"{'быстрый режим' if rp.fast else 'реальный темп'}; "
+              f"распознавание: {rp.asr.name if rp.asr else 'нет'}; "
+              f"модель: {rp.brain.name + ':' + rp.brain.model if rp.brain else 'нет'}. Остановка: Ctrl+C")
+        if rp.asr and rp.asr.name in ("mlx", "faster"):
+            print("Загрузка модели распознавания (первый раз — скачивание, может занять несколько минут)…")
+            rp.asr.warmup()
+        print_summary(rp.run(), rp.out_dir)
         return 0
 
     from .app import load_show_config, resolve_input_profile
@@ -84,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
 def cli() -> int:
     try:
         return main()
-    except (FileNotFoundError, ValueError) as e:  # ошибки конфигурации — коротко, без трассировки
+    except (FileNotFoundError, ValueError, RuntimeError) as e:  # ошибки конфигурации — коротко, без трассировки
         print(f"Ошибка: {e}", file=sys.stderr)
         return 2
 

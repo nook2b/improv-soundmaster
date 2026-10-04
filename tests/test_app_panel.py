@@ -81,3 +81,66 @@ def test_input_override_by_name():
 
     with pytest.raises(FileNotFoundError):
         resolve_input_profile(cfg, "nope")
+
+
+def test_live_listening_path(tmp_path):
+    """Живой режим: звук из потока входа → фразы → распознавание → правила и модель → контроллер."""
+    import asyncio
+    import threading
+
+    import numpy as np
+
+    from soundmaster.brain.providers import FakeBrain
+    from soundmaster.brain.scheduler import BrainScheduler, SchedulerConfig
+    from soundmaster.fastrules import FastRules
+    from soundmaster.listener import Listener
+    from soundmaster.media.asr import ASRWorker, ScriptedASR
+
+    app = make_app(tmp_path)
+    app.start()
+    t0 = app.clock.now()
+    asr = ScriptedASR([(t0 + 0.2, t0 + 1.2, "Сейчас вылетит птичка"), (t0 + 1.8, t0 + 2.6, "Кто-то звонит в дверь")])
+    brain = FakeBrain(app.registry, rules=[("звонит в дверь", {"type": "effect", "id": "doorbell",
+                                                               "reason": "r", "confidence": "high"})])
+    app.scheduler = BrainScheduler(brain, app.controller, app.journal, app.clock, SchedulerConfig(min_interval=0))
+    app.listener = Listener(app.controller, app.journal, app.clock, None,
+                            asr_worker=ASRWorker(asr, app.clock, lambda tr: None),
+                            rules=FastRules(app.registry), scheduler=app.scheduler)
+    sr = 48000
+
+    def speak():
+        import time
+
+        def tone(sec):
+            t = np.arange(int(sec * sr)) / sr
+            return (0.25 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+        sig = np.concatenate([np.zeros(int(0.2 * sr), np.float32), tone(1.0), np.zeros(int(0.6 * sr), np.float32),
+                              tone(0.8), np.zeros(int(1.0 * sr), np.float32)])
+        blk = sr // 10
+        for i in range(0, len(sig), blk):
+            target = t0 + i / sr
+            time.sleep(max(0.0, target - app.clock.now()))
+            app.listener.feed_audio(sig[i:i + blk], t0 + i / sr, sr)
+
+    async def main():
+        tasks = app.attach_loop(asyncio.get_running_loop())
+        th = threading.Thread(target=speak)
+        th.start()
+        for _ in range(80):
+            app.controller.tick()
+            await asyncio.sleep(0.05)
+        th.join()
+        for t in tasks:
+            t.cancel()
+        await app.detach_loop()
+
+    try:
+        asyncio.run(main())
+        st = app.status()
+        assert [r["text"] for r in st["listen"]["recent"]] == ["Сейчас вылетит птичка", "Кто-то звонит в дверь"]
+        calls = [(r.get("call"), r.get("effect"), r.get("result")) for r in app.journal.records if r["kind"] == "decision"]
+        assert ("arm", "camera_shutter", "armed") in calls
+        assert ("suggest_sfx", "doorbell", "suggested") in calls
+    finally:
+        app.stop()

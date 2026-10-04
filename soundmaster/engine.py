@@ -52,6 +52,15 @@ class Engine:
         self.journal.write("preload", loaded=len(loaded), missing=missing, errors=errors)
         return LoadReport(loaded, missing, errors)
 
+    def fill_missing_with_silence(self) -> list[str]:
+        """Для теневого прогона: недостающие файлы заменяются тишиной, чтобы решения не блокировались."""
+        files = {e.file for e in self.registry.effects.values()}
+        files |= {s.file for s in self.registry.music_states.values() if s.file}
+        filled = [f for f in sorted(files) if f not in self.sounds]
+        for f in filled:
+            self.sounds[f] = np.zeros((self.mixer.sample_rate // 2, 2), np.float32)
+        return filled
+
     def available(self, effect: Effect) -> bool:
         return effect.file in self.sounds
 

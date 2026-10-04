@@ -18,9 +18,17 @@ from .audio.devices import NullOutput, SoundDeviceInput, SoundDeviceOutput
 from .audio.inputs import InputProfile, load_input_profile
 from .audio.mixer import Mixer
 from .audio.recording import Recorder
+from .brain.providers import make_brain
+from .brain.scheduler import BrainScheduler, SchedulerConfig
 from .clock import Clock
 from .controller import Controller
 from .engine import Engine, LoadReport
+from .fastrules import FastRules
+from .listener import ASR_RATE, Listener
+from .media.asr import ASRWorker, make_asr
+from .media.ffmpeg import CameraReader
+from .media.scenecut import SceneCutConfig, SceneCutDetector
+from .media.vad import EnergyVAD
 from .journal import Journal
 from .music.director import MusicDirector
 from .music.generators import make_generator
@@ -61,8 +69,10 @@ def load_show_config(path: str | Path) -> ShowConfig:
 class InputMonitor:
     """Забирает блоки входа из очереди захвата: запись + уровни по ролям для пульта."""
 
-    def __init__(self, capture: SoundDeviceInput, profile: InputProfile, recorder: Recorder | None):
+    def __init__(self, capture: SoundDeviceInput, profile: InputProfile, recorder: Recorder | None,
+                 listener=None):
         self.capture = capture
+        self.listener = listener
         self.profile = profile
         self.track = recorder.track("input", profile.device_channels, profile.sample_rate) if recorder else None
         self.levels: dict[str, float] = {}
@@ -80,6 +90,11 @@ class InputMonitor:
                 continue
             if self.track:
                 self.track.push(block, t)
+            if self.listener is not None and self.listener.loop is not None:
+                try:
+                    self.listener.feed_audio(self.profile.ai_feed(block), t, self.profile.sample_rate)
+                except Exception as e:  # noqa: BLE001 — слух не должен мешать записи и звуку
+                    self.listener.journal.write("error", where="listener_audio", error=f"{type(e).__name__}: {e}")
             levels = {}
             for ch in self.profile.channels:
                 rms = float(np.sqrt(np.mean(block[:, ch.index] ** 2)) + 1e-12)
@@ -118,8 +133,13 @@ class App:
         self.music = MusicDirector(self.registry, self.engine, self.journal, generator)
         self.music.set_generator_enabled(bool(self.cfg.get("music", "generator_enabled", False)))
 
+        sc = self.cfg.raw.get("scene_cut") or {}
         self.controller = Controller(self.registry, self.engine, self.music, self.journal, self.clock,
-                                     clean_actor_feed=self.profile.clean_actor_feed)
+                                     clean_actor_feed=self.profile.clean_actor_feed,
+                                     scene_cut_mode=str(sc.get("mode", "SUGGEST")),
+                                     scene_cut_music=str(sc.get("music", "stop")),
+                                     scene_cut_cooldown=float(sc.get("cooldown", 10)))
+        self._build_listener(null_audio)
 
         ref_track = self.recorder.track("output_reference", 2, sr) if self.recorder else None
 
@@ -139,6 +159,70 @@ class App:
         self.load_report: LoadReport | None = None
         self.input_error: str | None = None
 
+    def _build_listener(self, null_audio: bool) -> None:
+        """Слух (распознавание + правила), «мозг» и камера — если включены в show.yaml."""
+        listen = self.cfg.raw.get("listen") or {}
+        bcfg = self.cfg.raw.get("brain") or {}
+        vcfg = self.cfg.raw.get("video") or {}
+        sc = self.cfg.raw.get("scene_cut") or {}
+        self.listener: Listener | None = None
+        self.scheduler: BrainScheduler | None = None
+        self.camera: CameraReader | None = None
+        self.listen_error: str | None = None
+        asr = None
+        try:
+            asr = make_asr(listen.get("asr") or "off", listen)
+        except Exception as e:  # noqa: BLE001 — без распознавания пульт всё равно работает
+            self.listen_error = f"распознавание: {e}"
+        brain = make_brain(bcfg.get("provider") or "off", self.registry, bcfg)
+        video_on = bool(vcfg.get("enabled", False)) and not null_audio
+        if not (asr or brain or video_on):
+            return
+        if brain:
+            self.scheduler = BrainScheduler(brain, self.controller, self.journal, self.clock,
+                                            SchedulerConfig.from_dict(bcfg))
+        scenecut = (SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector")))
+                    if video_on and str(sc.get("mode", "SUGGEST")).upper() != "OFF" else None)
+        self.listener = Listener(
+            self.controller, self.journal, self.clock, None,
+            vad=EnergyVAD(ASR_RATE, **(listen.get("vad") or {})),
+            asr_worker=ASRWorker(asr, self.clock, lambda tr: None) if asr else None,
+            rules=FastRules(self.registry), scheduler=self.scheduler, scenecut=scenecut,
+        )
+        if video_on:
+            self.camera = CameraReader(str(vcfg.get("camera", "0")), float(vcfg.get("fps", 5)),
+                                       int(vcfg.get("width", 640)), int(vcfg.get("height", 360)),
+                                       self.listener.feed_frame, self.clock,
+                                       capture_size=str(vcfg.get("capture_size", "1280x720")))
+
+    def attach_loop(self, loop) -> list:
+        """Запуск слуха внутри asyncio-цикла пульта. Возвращает фоновые задачи."""
+        tasks = []
+        if self.listener:
+            self.listener.loop = loop
+            if self.listener.asr_worker:
+                self.listener.asr_worker.start()  # модель загружается в потоке распознавания
+            if self.camera:
+                try:
+                    self.camera.start()
+                except Exception as e:  # noqa: BLE001
+                    self.camera.error = f"{type(e).__name__}: {e}"
+        if self.scheduler:
+            tasks.append(loop.create_task(self.scheduler.run()))
+        self.journal.write("listen", asr=self.listener.asr_worker.asr.name
+                           if self.listener and self.listener.asr_worker else None,
+                           brain=f"{self.scheduler.brain.name}:{self.scheduler.brain.model}" if self.scheduler else None,
+                           camera=bool(self.camera), error=self.listen_error)
+        return tasks
+
+    async def detach_loop(self) -> None:
+        if self.camera:
+            self.camera.stop()
+        if self.listener and self.listener.asr_worker:
+            self.listener.asr_worker.stop()
+        if self.scheduler:
+            await self.scheduler.brain.close()
+
     def start(self) -> None:
         self.journal.write("start", version=__version__, input_profile=self.profile.name,
                            clean_actor_feed=self.profile.clean_actor_feed,
@@ -152,7 +236,7 @@ class App:
             try:
                 self.capture = SoundDeviceInput(self.profile, self.clock)
                 self.capture.start()
-                self.monitor = InputMonitor(self.capture, self.profile, self.recorder)
+                self.monitor = InputMonitor(self.capture, self.profile, self.recorder, self.listener)
                 self.monitor.start()
             except Exception as e:  # noqa: BLE001
                 self.capture = None
@@ -185,6 +269,17 @@ class App:
         s["output"] = {"xruns": self.output.xruns, "limited_blocks": self.mixer.limited_blocks,
                        "latency_ms": round(1000 * float(getattr(self.output, "output_latency", 0.0)), 1)}
         s["recording"] = str(self.run_dir) if self.recorder else None
+        s["listen"] = {
+            "enabled": self.listener is not None,
+            "asr": self.listener.asr_worker.asr.name if self.listener and self.listener.asr_worker else None,
+            "recent": self.listener.recent if self.listener else [],
+            "speech": bool(self.listener and self.listener.vad.in_speech),
+            "asr_state": self.listener.asr_worker.state if self.listener and self.listener.asr_worker else None,
+            "error": self.listen_error or (self.listener.asr_worker.last_error
+                                           if self.listener and self.listener.asr_worker else None),
+            "camera_error": self.camera.error if self.camera else None,
+            "brain": self.scheduler.status() if self.scheduler else None,
+        }
         return s
 
     def describe_library(self) -> dict[str, Any]:

@@ -47,6 +47,19 @@ def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
         app.music.set_generator_enabled(bool(msg["enabled"]))
     elif cmd == "set_mode":
         c.set_mode(msg["effect"], msg["mode"])
+    elif cmd == "fire":
+        d = c.fire("operator")
+        return {"result": d.result, "effect": d.effect, "blocked_by": d.blocked_by}
+    elif cmd == "disarm":
+        if c.state.armed:
+            c._disarm("operator")
+    elif cmd == "brain":
+        if app.scheduler:
+            app.scheduler.enabled = bool(msg["enabled"])
+            app.journal.write("operator", action="brain_enabled", enabled=app.scheduler.enabled)
+    elif cmd == "scene_cut_mode":
+        c.scene_cut_mode = str(msg["mode"]).upper()
+        app.journal.write("operator", action="scene_cut_mode", mode=c.scene_cut_mode)
     elif cmd == "mark":
         # Отметка техника «здесь было событие» — черновик эталонной дорожки для разметки.
         app.journal.write("mark", label=msg.get("label", ""), scene_id=c.state.scene_id)
@@ -100,8 +113,12 @@ def make_web_app(app: App) -> web.Application:
                 await asyncio.sleep(0.05)
 
         task = asyncio.create_task(loop())
+        bg = app.attach_loop(asyncio.get_running_loop())
         yield
         task.cancel()
+        for t in bg:
+            t.cancel()
+        await app.detach_loop()
 
     web_app = web.Application()
     web_app.router.add_get("/", index)
