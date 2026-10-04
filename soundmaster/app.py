@@ -39,6 +39,20 @@ class ShowConfig:
         return (self.raw.get(section) or {}).get(key, default)
 
 
+def resolve_input_profile(cfg: ShowConfig, override: str | None = None) -> Path:
+    """Профиль из show.yaml или из --input: имя (mac-mic) или путь к YAML."""
+    if not override:
+        return cfg.rel(cfg.raw["input_profile"])
+    p = Path(override)
+    if p.suffix in (".yaml", ".yml") and p.exists():
+        return p.resolve()
+    candidate = cfg.rel(f"inputs/{override}.yaml")
+    if not candidate.exists():
+        names = sorted(x.stem for x in cfg.rel("inputs").glob("*.yaml"))
+        raise FileNotFoundError(f"профиль входа {override!r} не найден. Есть: {', '.join(names)}")
+    return candidate
+
+
 def load_show_config(path: str | Path) -> ShowConfig:
     path = Path(path).resolve()
     return ShowConfig(path, yaml.safe_load(path.read_text(encoding="utf-8")) or {})
@@ -78,13 +92,14 @@ class InputMonitor:
 
 
 class App:
-    def __init__(self, config_path: str | Path, *, null_audio: bool = False, no_input: bool = False):
+    def __init__(self, config_path: str | Path, *, null_audio: bool = False, no_input: bool = False,
+                 input_profile: str | None = None):
         self.cfg = load_show_config(config_path)
         self.clock = Clock()
         self.show_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         self.registry: Registry = load_registry(self.cfg.rel(self.cfg.raw.get("registry", "registry.yaml")))
-        self.profile: InputProfile = load_input_profile(self.cfg.rel(self.cfg.raw["input_profile"]))
+        self.profile: InputProfile = load_input_profile(resolve_input_profile(self.cfg, input_profile))
         self.input_enabled = bool(self.cfg.raw.get("input_enabled", True)) and not no_input and not null_audio
 
         rec_enabled = bool(self.cfg.get("recording", "enabled", True))

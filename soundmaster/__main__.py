@@ -1,6 +1,7 @@
 """Командная строка.
 
   python -m soundmaster run            — запустить пульт (http://127.0.0.1:8765)
+  python -m soundmaster run --input mac-mic — домашний тест с микрофоном Mac
   python -m soundmaster devices        — список аудиоустройств (имена для config)
   python -m soundmaster check          — проверить конфигурацию и файлы
   python -m soundmaster make-test-sounds — создать тестовые звуки для всех файлов реестра
@@ -24,8 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--null-audio", action="store_true", help="без звуковой карты (проверка интерфейса)")
     r.add_argument("--no-input", action="store_true", help="не открывать вход звука")
     r.add_argument("--no-browser", action="store_true", help="не открывать браузер")
+    input_help = "профиль входа вместо указанного в show.yaml: mac-mic, brio-mic, recorder или путь к YAML"
+    r.add_argument("--input", help=input_help)
     sub.add_parser("devices", help="список аудиоустройств")
-    sub.add_parser("check", help="проверить конфигурацию")
+    ch = sub.add_parser("check", help="проверить конфигурацию")
+    ch.add_argument("--input", help=input_help)
     m = sub.add_parser("make-test-sounds", help="создать тестовые звуки")
     m.add_argument("--force", action="store_true", help="перезаписать существующие файлы")
     args = p.parse_args(argv)
@@ -36,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         print(list_devices())
         return 0
 
-    from .app import load_show_config
+    from .app import load_show_config, resolve_input_profile
     from .audio.inputs import load_input_profile
     from .registry import load_registry
 
@@ -51,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "check":
-        profile = load_input_profile(cfg.rel(cfg.raw["input_profile"]))
+        profile = load_input_profile(resolve_input_profile(cfg, args.input))
         print(profile.describe())
         print(f"\nЭффектов: {len(registry.effects)}, музыкальных состояний: {len(registry.music_states)}")
         missing = [e.file for e in registry.effects.values() if not registry.path_of(e.file).exists()]
@@ -65,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     from .app import App
     from .panel.server import run_panel
 
-    app = App(args.config, null_audio=args.null_audio, no_input=args.no_input)
+    app = App(args.config, null_audio=args.null_audio, no_input=args.no_input, input_profile=args.input)
     host = cfg.get("panel", "host", "127.0.0.1")
     port = int(cfg.get("panel", "port", 8765))
     url = f"http://{host}:{port}"
@@ -77,5 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def cli() -> int:
+    try:
+        return main()
+    except (FileNotFoundError, ValueError) as e:  # ошибки конфигурации — коротко, без трассировки
+        print(f"Ошибка: {e}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

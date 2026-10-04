@@ -81,7 +81,7 @@ class InputProfile:
         lines = [f"Профиль входа: {self.name} (устройство: {self.device or 'по умолчанию'}, {self.sample_rate} Гц)"]
         for c in self.channels:
             lines.append(f"  канал {c.index + 1}: {c.role} — {c.name or ROLES[c.role]}")
-        lines.append(f"  чистый звук актёров: {'да' if self.clean_actor_feed else 'нет — рекордер слышит колонки'}")
+        lines.append(f"  чистый звук актёров: {'да' if self.clean_actor_feed else 'нет — общий микрофон слышит и колонки'}")
         lines.append(f"  вход для AI: {', '.join(self.ai_feed_roles)}")
         return "\n".join(lines)
 

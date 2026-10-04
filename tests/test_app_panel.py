@@ -66,3 +66,18 @@ def test_input_failure_keeps_panel_working(tmp_path, monkeypatch):
         assert handle_command(app, {"cmd": "play", "effect": "knock"})["result"] == "played"
     finally:
         app.stop()
+
+
+def test_input_override_by_name():
+    from soundmaster.app import load_show_config, resolve_input_profile
+    from soundmaster.audio.inputs import load_input_profile
+
+    cfg = load_show_config(ROOT / "config" / "show.yaml")
+    assert resolve_input_profile(cfg).name == "recorder.yaml"
+    mac = load_input_profile(resolve_input_profile(cfg, "mac-mic"))
+    assert mac.device_channels == 1 and not mac.clean_actor_feed
+    assert load_input_profile(resolve_input_profile(cfg, "brio-mic")).device_channels == 2
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        resolve_input_profile(cfg, "nope")

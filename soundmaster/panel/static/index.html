@@ -143,7 +143,7 @@ function render(s) {
   $("scene").textContent = `Сцена ${s.scene_id}` + (s.scene_hint ? ` · ${s.scene_hint}` : "");
   $("auto").textContent = s.automation ? "Автоматика вкл" : "Автоматика выкл";
   $("auto").className = "pill " + (s.automation ? "ok" : "warn");
-  $("feed").textContent = s.clean_actor_feed ? "Чистый звук актёров" : "Рекордер: AI только подсказывает";
+  $("feed").textContent = s.clean_actor_feed ? "Чистый звук актёров" : `Вход ${s.input.profile}: AI только подсказывает`;
   $("feed").className = "pill " + (s.clean_actor_feed ? "ok" : "warn");
   $("out").textContent = `Выход ${s.output.latency_ms} мс · сбоев ${s.output.xruns}` + (s.output.limited_blocks ? ` · лимитер ${s.output.limited_blocks}` : "");
   $("out").className = "pill " + (s.output.xruns ? "warn" : "");

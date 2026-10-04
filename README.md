@@ -38,6 +38,18 @@ python -m soundmaster run                # открыть пульт: http://127
 
 Без звуковой карты и входа (проверить интерфейс): `python -m soundmaster run --null-audio`.
 
+## Домашний тест без рекордера
+
+```bash
+python -m soundmaster run --input mac-mic    # встроенный микрофон Mac
+python -m soundmaster run --input brio-mic   # микрофоны веб-камеры Logitech Brio
+```
+
+Флаг `--input` меняет профиль входа только на этот запуск; `config/show.yaml` не трогается.
+Если устройство не находится — `python -m soundmaster devices` и поправьте `device` в
+`config/inputs/mac-mic.yaml` или `brio-mic.yaml`. Слушайте в наушниках, иначе микрофон
+записывает и звуки системы из динамиков (так же, как рекордер на площадке).
+
 ## Подключение рекордера
 
 1. Подключите рекордер к Mac по USB и включите на нём режим аудиоинтерфейса (у Zoom H4n/H5/H6 —
