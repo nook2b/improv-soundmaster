@@ -1,0 +1,75 @@
+# Настройки запуска. Пути — относительно этого файла.
+registry: registry.yaml
+
+# Профиль входа звука. Сейчас — рекордер у сцены. Когда появятся петлички и микшер/интерфейс,
+# поменять на inputs/lavaliers-interface.yaml или inputs/mixer-aux.yaml (код менять не нужно).
+input_profile: inputs/recorder.yaml
+input_enabled: true          # false — работать без входа (только пульт и проигрыватель)
+
+output:
+  device: null               # подстрока имени устройства вывода; null — выход по умолчанию в macOS
+  sample_rate: 48000
+  blocksize: 256             # меньше — ниже задержка, но выше риск щелчков
+  master_gain_db: 0
+
+recording:
+  enabled: true              # писать вход и выход системы в recordings/<дата-время>/
+  dir: ../recordings
+
+music:
+  generator: test_tone       # none | test_tone | lyria_realtime (нужен GEMINI_API_KEY)
+  generator_enabled: false   # включается на пульте; по умолчанию музыка из файлов
+
+panel:
+  host: 127.0.0.1
+  port: 8765
+
+# ---- Слух: нарезка речи и распознавание (локально на Mac) ----
+listen:
+  asr: "off"                 # mlx (Mac M1–M4) | faster (CPU) | off
+  language: ru
+  mlx_model: mlx-community/whisper-large-v3-turbo
+  faster_model: small
+  initial_prompt: "Импровизационное шоу. Реплики актёров на русском языке."
+  vad:
+    threshold_db: 10         # насколько речь громче фона
+    hangover_ms: 450         # пауза, после которой фраза закончена
+    max_utterance_s: 6       # длиннее — режем принудительно (на сцене говорят без пауз)
+
+# ---- «Мозг»: облачная модель (теневой режим — всё только в журнал/подсказки) ----
+brain:
+  provider: "off"            # openai | gemini | off; ключ — OPENAI_API_KEY / GEMINI_API_KEY
+  min_interval: 1.5          # с между запросами
+  idle_interval: 10          # если долго тихо — запрос с кадром (жесты без слов)
+  image_every: 5             # кадр не чаще, с; 0 — без кадров
+  context_seconds: 45        # сколько реплик назад видит модель
+  budget_usd: 3.0            # на один запуск; дальше запросы прекращаются
+  timeout: 8
+  openai:
+    model: gpt-5-mini
+    extra: { reasoning_effort: minimal }
+  gemini:
+    model: gemini-3.5-flash
+    extra: {}
+  prices:                    # $ за 1M токенов — ориентир для отчёта; сверить на сайте провайдера
+    openai: { input: 0.25, cached_input: 0.025, output: 2.0 }
+    gemini: { input: 1.5, cached_input: 0.15, output: 9.0 }
+
+# ---- Камера ----
+video:
+  enabled: false             # живая камера в режиме run (для прогона записей не нужна)
+  camera: "BRIO"             # имя или номер: python -m soundmaster cameras
+  capture_size: 1280x720
+  fps: 5                     # кадров в секунду для анализа
+  width: 640
+  height: 360
+
+# ---- «Монтаж»: проход перед сценой → новая сцена ----
+scene_cut:
+  mode: SUGGEST              # OFF | SUGGEST (подсказка технику) | AUTO (сама начинает новую сцену)
+  music: stop                # stop — фон новой сцены выбирается заново | keep — оставить
+  cooldown: 10               # с после начала сцены, когда новый «монтаж» игнорируется
+  detector:
+    min_height: 0.35         # насколько крупной должна быть фигура (доля высоты кадра)
+    min_travel: 0.55         # какую часть ширины кадра пройти
+    max_duration: 4.0        # быстрее этого — проход, медленнее — просто ходьба

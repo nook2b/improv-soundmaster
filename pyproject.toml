@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "improv-soundmaster"
+version = "0.1.0"
+description = "AI-звукарь для импров-шоу"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "pyyaml>=6",
+  "aiohttp>=3.9",
+  "sounddevice>=0.4.6",
+  "pillow>=10",
+]
+
+[project.optional-dependencies]
+files = ["soundfile>=0.12"]          # float-WAV, AIFF, FLAC
+lyria = ["google-genai>=1.0"]        # потоковая генерация музыки Lyria RealTime
+asr-mac = ["mlx-whisper>=0.4"]       # распознавание речи на Mac M1–M4
+asr-cpu = ["faster-whisper>=1.0"]    # распознавание речи на CPU (Linux, Intel Mac)
+dev = ["pytest>=8"]
+
+[project.scripts]
+soundmaster = "soundmaster.__main__:cli"
+
+[tool.setuptools.packages.find]
+include = ["soundmaster*"]
+
+[tool.setuptools.package-data]
+soundmaster = ["panel/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
