@@ -19,7 +19,7 @@ import aiohttp
 import numpy as np
 
 from ..registry import Registry
-from .prompt import gemini_schema, openai_schema, system_text
+from .prompt import STYLE_FIELDS, gemini_schema, openai_schema, system_text
 
 
 @dataclass
@@ -67,8 +67,11 @@ def parse_actions(text: str) -> list[dict[str, Any]]:
     out = []
     for a in actions[:2]:
         if isinstance(a, dict) and a.get("type"):
-            out.append({"type": a["type"], "id": a.get("id"), "reason": str(a.get("reason", ""))[:200],
-                        "confidence": a.get("confidence")})
+            act = {"type": a["type"], "id": a.get("id"), "reason": str(a.get("reason", ""))[:200],
+                   "confidence": a.get("confidence")}
+            if a["type"] == "music":
+                act.update({k: a.get(k) for k in STYLE_FIELDS})
+            out.append(act)
     return out
 
 

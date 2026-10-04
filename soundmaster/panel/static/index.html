@@ -76,6 +76,7 @@
 
   <section>
     <h2>Музыка и атмосфера</h2>
+    <div class="help" id="nowMusic" style="margin-bottom:8px">Музыка не играет</div>
     <div class="grid" id="music"></div>
     <div class="ctl" style="margin-top:8px">
       <button id="musicStop">Стоп музыка</button>
@@ -175,6 +176,8 @@ function render(s) {
   const playing = new Set(s.playing.map(p => p.effect));
   document.querySelectorAll("[data-effect]").forEach(b => b.classList.toggle("playing", playing.has(b.dataset.effect)));
   const activeMusic = new Set(Object.values(s.music.active).map(a => a.state));
+  const nowMusic = Object.entries(s.music.active).map(([ch, a]) => `${ch === "ambience" ? "атмосфера" : "музыка"}: ${a.label || a.state}` + (a.source === "none" ? " (нет источника — тишина)" : ` (${a.source === "generator" ? "генератор" : "файл"})`));
+  $("nowMusic").textContent = nowMusic.length ? nowMusic.join(" · ") : "Музыка не играет";
   document.querySelectorAll("[data-music]").forEach(b => b.classList.toggle("playing", activeMusic.has(b.dataset.music)));
   const g = s.music;
   $("gen").textContent = g.generator ? `Генератор ${g.generator}: ${g.generator_enabled ? "вкл" : "выкл"}` + (g.generator_error ? ` (${g.generator_error})` : "") : "Генератор не настроен";
@@ -186,8 +189,9 @@ function render(s) {
   for (const it of s.suggestions) {
     const row = document.createElement("div");
     row.className = "item " + it.kind;
-    const key = { effect: "S", music: "M", scene_end: "B" }[it.kind];
-    row.innerHTML = `<span class="grow"><b>${esc(it.kind === "scene_end" ? "Отбивка" : (names[it.target] || it.target))}</b> · ${esc(it.confidence)} · ${esc(it.reason)} <span class="help">(${it.ttl} с)</span></span>`;
+    const key = { effect: "S", music: "M", music_style: "M", scene_end: "B" }[it.kind];
+    const title = it.kind === "scene_end" ? "Отбивка" : it.kind === "music_style" ? "Музыка" : (names[it.target] || it.target);
+    row.innerHTML = `<span class="grow"><b>${esc(title)}</b> · ${esc(it.confidence)} · ${esc(it.reason)} <span class="help">(${it.ttl} с)</span></span>`;
     const ok = document.createElement("button"); ok.textContent = `Играть (${key})`; ok.onclick = () => send({ cmd: "confirm", id: it.id });
     const no = document.createElement("button"); no.textContent = "Отклонить"; no.onclick = () => send({ cmd: "dismiss", id: it.id });
     row.append(ok, no); box.appendChild(row);

@@ -61,6 +61,12 @@ def resolve_input_profile(cfg: ShowConfig, override: str | None = None) -> Path:
     return candidate
 
 
+def autonomy_kwargs(cfg: ShowConfig) -> dict[str, Any]:
+    """Что AI делает сам, без человека (show.yaml, раздел autonomy)."""
+    a = cfg.raw.get("autonomy") or {}
+    return {"music_mode": str(a.get("music", "SUGGEST")), "music_min_hold": float(a.get("music_min_hold", 30))}
+
+
 def load_show_config(path: str | Path) -> ShowConfig:
     path = Path(path).resolve()
     return ShowConfig(path, yaml.safe_load(path.read_text(encoding="utf-8")) or {})
@@ -138,7 +144,8 @@ class App:
                                      clean_actor_feed=self.profile.clean_actor_feed,
                                      scene_cut_mode=str(sc.get("mode", "SUGGEST")),
                                      scene_cut_music=str(sc.get("music", "stop")),
-                                     scene_cut_cooldown=float(sc.get("cooldown", 10)))
+                                     scene_cut_cooldown=float(sc.get("cooldown", 10)),
+                                     **autonomy_kwargs(self.cfg))
         self._build_listener(null_audio)
 
         ref_track = self.recorder.track("output_reference", 2, sr) if self.recorder else None

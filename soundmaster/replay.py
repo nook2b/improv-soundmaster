@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from .app import load_show_config
+from .app import autonomy_kwargs, load_show_config
 from .audio.devices import NullOutput
 from .audio.mixer import Mixer
 from .brain.providers import Brain, make_brain
@@ -88,6 +88,7 @@ class Replay:
             clean_actor_feed=opts.clean_feed,
             scene_cut_mode=opts.scene_cut_mode or sc.get("mode", "SUGGEST"),
             scene_cut_music=sc.get("music", "stop"), scene_cut_cooldown=float(sc.get("cooldown", 10)),
+            **autonomy_kwargs(cfg),
         )
 
         listen = cfg.raw.get("listen") or {}

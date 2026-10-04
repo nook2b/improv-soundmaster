@@ -147,3 +147,52 @@ music_states:
     channel: ambience
     file: ambience/rain.wav
     hotkey: "r"
+
+# Словарь музыки для генератора (Lyria RealTime). Модель выбирает по одному слову из каждого
+# раздела (жанр / настроение / энергия / темп), программа собирает из них запрос к генератору.
+# Свободный текст от модели не принимается. text — для генератора (по-английски), label — для пульта.
+# fallback у настроения — музыкальное состояние-файл, если генератор недоступен (иначе тишина).
+music_vocabulary:
+  gain_db: -8
+  fade_in: 3
+  fade_out: 3
+  genres:
+    underscore:  { label: "Нейтральный фон", text: "subtle cinematic underscore, soft pads, unobtrusive background music" }
+    drama:       { label: "Драма", text: "dramatic orchestral film score, strings and piano" }
+    comedy:      { label: "Комедия", text: "quirky comedic underscore, pizzicato strings, bassoon, playful percussion" }
+    noir:        { label: "Нуар/детектив", text: "film noir detective jazz, muted trumpet, upright bass, brushed drums" }
+    thriller:    { label: "Триллер", text: "thriller underscore, pulsing synth bass, ticking percussion, low strings" }
+    horror:      { label: "Ужасы", text: "horror ambience, dissonant strings, eerie drones, sparse piano" }
+    romance:     { label: "Романтика", text: "romantic film score, warm strings, gentle piano" }
+    western:     { label: "Вестерн", text: "spaghetti western, twangy electric guitar, whistling, harmonica" }
+    action:      { label: "Экшн/погоня", text: "action chase music, driving drums, staccato strings, brass hits" }
+    fantasy:     { label: "Сказка/фэнтези", text: "fairy tale fantasy music, harp, celesta, flutes, magical" }
+    scifi:       { label: "Фантастика", text: "science fiction soundtrack, analog synthesizers, arpeggios, spacey pads" }
+    epic:        { label: "Эпос", text: "epic orchestral music, choir, big drums, heroic brass" }
+    cartoon:     { label: "Мультфильм", text: "cartoon music, xylophone, slide whistle, bouncy tuba" }
+    lounge:      { label: "Бар/лаунж", text: "lounge jazz, smooth piano trio, background bar music" }
+    period:      { label: "Старина/классика", text: "baroque chamber music, harpsichord, string quartet" }
+    folk:        { label: "Деревня/фолк", text: "folk music, accordion, acoustic guitar, balalaika" }
+    electronic:  { label: "Клуб/электроника", text: "electronic dance music, four on the floor beat, synth bass" }
+    sport:       { label: "Спорт/соревнование", text: "sports anthem, energetic rock drums, electric guitar riffs" }
+  moods:
+    tense:       { label: "напряжение", text: "tense, suspenseful", fallback: tension }
+    ominous:     { label: "угроза", text: "ominous, dark, threatening", fallback: tension }
+    mysterious:  { label: "загадка", text: "mysterious, curious, enigmatic", fallback: tension }
+    anxious:     { label: "тревога", text: "anxious, nervous, uneasy", fallback: tension }
+    sad:         { label: "грусть", text: "sad, melancholic, sorrowful" }
+    tender:      { label: "нежность", text: "tender, loving, intimate", fallback: romantic }
+    happy:       { label: "радость", text: "happy, cheerful, bright" }
+    playful:     { label: "озорство", text: "playful, mischievous, light-hearted" }
+    absurd:      { label: "абсурд", text: "absurd, silly, clumsy, comedic" }
+    triumphant:  { label: "триумф", text: "triumphant, victorious, uplifting" }
+    calm:        { label: "спокойствие", text: "calm, peaceful, relaxed" }
+    nostalgic:   { label: "ностальгия", text: "nostalgic, wistful, bittersweet" }
+  energy:
+    low:    { label: "тихо", config: { density: 0.2, brightness: 0.3 } }
+    medium: { label: "средне", config: { density: 0.45, brightness: 0.5 } }
+    high:   { label: "мощно", config: { density: 0.75, brightness: 0.65 } }
+  tempo:
+    slow:   { label: "медленно", config: { bpm: 70 } }
+    medium: { label: "умеренно", config: { bpm: 100 } }
+    fast:   { label: "быстро", config: { bpm: 135 } }

@@ -77,6 +77,71 @@ class MusicState:
 
 
 @dataclass
+class VocabItem:
+    """Одно слово музыкального словаря: что модель выбирает и что из этого получает генератор."""
+
+    id: str
+    label: str = ""
+    text: str = ""  # фрагмент описания для генератора (Lyria понимает английский)
+    config: dict[str, Any] = field(default_factory=dict)  # параметры генератора: bpm, density, brightness
+    fallback: str | None = None  # музыкальное состояние-файл на случай сбоя генератора (только у mood)
+
+
+@dataclass
+class MusicStyle:
+    """Музыка сцены, собранная из словаря: жанр + настроение + энергия + темп."""
+
+    genre: str
+    mood: str
+    energy: str
+    tempo: str
+
+    @property
+    def id(self) -> str:
+        return f"{self.genre}/{self.mood}/{self.energy}/{self.tempo}"
+
+    @classmethod
+    def parse(cls, style_id: str) -> "MusicStyle":
+        parts = style_id.split("/")
+        if len(parts) != 4:
+            raise RegistryError(f"стиль музыки {style_id!r}: нужно жанр/настроение/энергия/темп")
+        return cls(*parts)
+
+
+@dataclass
+class MusicVocabulary:
+    """Словарь, из которого модель собирает музыку для генератора (а не пишет свободный текст)."""
+
+    genres: dict[str, VocabItem]
+    moods: dict[str, VocabItem]
+    energy: dict[str, VocabItem]
+    tempo: dict[str, VocabItem]
+    fade_in: float = 3.0
+    fade_out: float = 3.0
+    gain_db: float = -8.0
+
+    def validate(self, style: MusicStyle) -> str | None:
+        for name, value, table in (("genre", style.genre, self.genres), ("mood", style.mood, self.moods),
+                                   ("energy", style.energy, self.energy), ("tempo", style.tempo, self.tempo)):
+            if value not in table:
+                return f"unknown_{name}"
+        return None
+
+    def label(self, style: MusicStyle) -> str:
+        return ", ".join(t[v].label for t, v in ((self.genres, style.genre), (self.moods, style.mood),
+                                                 (self.energy, style.energy), (self.tempo, style.tempo)))
+
+    def preset(self, style: MusicStyle) -> dict[str, Any]:
+        """Пресет генератора: два описания (жанр, настроение) и параметры энергии/темпа."""
+        g, m, e, t = self.genres[style.genre], self.moods[style.mood], self.energy[style.energy], self.tempo[style.tempo]
+        prompts = [{"text": x.text, "weight": 1.0} for x in (g, m) if x.text]
+        config: dict[str, Any] = {}
+        for x in (g, m, e, t):
+            config.update(x.config)
+        return {"prompts": prompts, "config": config}
+
+
+@dataclass
 class GlobalLimits:
     min_gap_between_different_ai_effects: float = 3.0
     max_ai_actions_per_minute: int = 6
@@ -97,6 +162,17 @@ class Registry:
     limits: GlobalLimits
     sounds_dir: Path
     scene_end_effect: str | None = None  # какой эффект звучит при подтверждении подсказки отбивки
+    vocabulary: MusicVocabulary | None = None  # словарь музыки для генератора; None — только состояния-файлы
+
+    def music_style_state(self, style: MusicStyle) -> MusicState:
+        """Музыкальное состояние для стиля из словаря: пресет генератора + резервный файл настроения."""
+        v = self.vocabulary
+        if v is None:
+            raise RegistryError("в реестре нет music_vocabulary")
+        fb = v.moods[style.mood].fallback
+        file = self.music_states[fb].file if fb else None
+        return MusicState(id=f"style:{style.id}", channel="music", label=v.label(style), file=file,
+                          generator=v.preset(style), fade_in=v.fade_in, fade_out=v.fade_out, gain_db=v.gain_db)
 
     def effect(self, effect_id: str) -> Effect:
         try:
@@ -226,5 +302,27 @@ def load_registry(path: str | Path) -> Registry:
     _require(scene_end_effect is None or scene_end_effect in effects,
              f"scene_end_effect {scene_end_effect!r} нет в effects")
 
+    vocabulary = _parse_vocabulary(data.get("music_vocabulary"), states)
     return Registry(effects=effects, music_states=states, limits=limits, sounds_dir=sounds_dir,
-                    scene_end_effect=scene_end_effect)
+                    scene_end_effect=scene_end_effect, vocabulary=vocabulary)
+
+
+def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState]) -> MusicVocabulary | None:
+    if not raw:
+        return None
+    tables: dict[str, dict[str, VocabItem]] = {}
+    for key in ("genres", "moods", "energy", "tempo"):
+        items = raw.get(key) or {}
+        _require(isinstance(items, dict) and items, f"music_vocabulary.{key}: нужен непустой словарь")
+        table = {}
+        for iid, it in items.items():
+            it = it or {}
+            _require("/" not in iid, f"music_vocabulary.{key}.{iid}: в id нельзя «/»")
+            fb = it.get("fallback")
+            _require(fb is None or fb in states, f"music_vocabulary.{key}.{iid}: нет состояния {fb!r}")
+            _require(fb is None or states[fb].channel == "music",
+                     f"music_vocabulary.{key}.{iid}: резерв {fb!r} должен быть на канале music")
+            table[iid] = VocabItem(iid, it.get("label", iid), it.get("text", ""), dict(it.get("config") or {}), fb)
+        tables[key] = table
+    return MusicVocabulary(**tables, fade_in=float(raw.get("fade_in", 3.0)),
+                           fade_out=float(raw.get("fade_out", 3.0)), gain_db=float(raw.get("gain_db", -8.0)))

@@ -4,8 +4,8 @@
 стерео-блоки float32 в `StreamBuffer`. Микшер читает буфер как обычный голос на шине music.
 
 - `TestToneGenerator` — локальный синтезатор аккордов для проверки цепочки без сети и ключей.
-- `LyriaRealtimeGenerator` — адаптер Google Lyria RealTime (экспериментальный, не проверен
-  на реальном ключе; включается в config/show.yaml).
+- `LyriaRealtimeGenerator` — адаптер Google Lyria RealTime (экспериментальная модель Google;
+  поток проверен на реальном ключе: первый звук через ~3 с; включается в config/show.yaml).
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ class LyriaRealtimeGenerator(MusicGenerator):
         self._thread.start()
         asyncio.run_coroutine_threadsafe(self._main(), self._loop)
 
-    async def _apply(self, preset: dict[str, Any]) -> None:
+    async def _apply(self, preset: dict[str, Any], previous: dict[str, Any] | None = None) -> None:
         from google.genai import types  # type: ignore
 
         prompts = [types.WeightedPrompt(text=p["text"], weight=float(p.get("weight", 1.0)))
@@ -144,6 +144,11 @@ class LyriaRealtimeGenerator(MusicGenerator):
         if preset.get("config"):
             await self._session.set_music_generation_config(
                 config=types.LiveMusicGenerationConfig(**preset["config"]))
+            # Темп и лад Lyria применяет только после сброса контекста (иначе продолжает старый).
+            old = (previous or {}).get("config") or {}
+            new = preset["config"]
+            if previous is not None and any(old.get(k) != new.get(k) for k in ("bpm", "scale")):
+                await self._session.reset_context()
 
     async def _main(self) -> None:
         try:
@@ -166,9 +171,9 @@ class LyriaRealtimeGenerator(MusicGenerator):
             self._session = None
 
     def update(self, preset: dict[str, Any]) -> None:
-        self._preset = dict(preset)
+        previous, self._preset = self._preset, dict(preset)
         if self._session and self._loop:
-            asyncio.run_coroutine_threadsafe(self._apply(self._preset), self._loop)
+            asyncio.run_coroutine_threadsafe(self._apply(self._preset, previous), self._loop)
 
     def stop(self) -> None:
         if self._session and self._loop:

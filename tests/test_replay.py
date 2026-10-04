@@ -54,10 +54,10 @@ def scene_video(tmp_path_factory):
     return out
 
 
-def run(scene_video, tmp_path, **kw):
+def run(scene_video, tmp_path, rules=None, **kw):
     registry = load_registry(ROOT / "config" / "registry.yaml")
-    brain = FakeBrain(registry, rules=[("звонит в дверь", {"type": "effect", "id": "doorbell",
-                                                           "reason": "звонок в дверь", "confidence": "high"})])
+    brain = FakeBrain(registry, rules=rules or [("звонит в дверь", {"type": "effect", "id": "doorbell",
+                                                                    "reason": "звонок в дверь", "confidence": "high"})])
     opts = ReplayOptions(media=scene_video, config=ROOT / "config" / "show.yaml", speed=0,
                          transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path, **kw)
     rp = Replay(opts, brain=brain)
@@ -66,7 +66,7 @@ def run(scene_video, tmp_path, **kw):
 
 
 def test_replay_fast_end_to_end(scene_video, tmp_path):
-    summary, j, rp = run(scene_video, tmp_path)
+    summary, j, rp = run(scene_video, tmp_path, scene_cut_mode="SUGGEST")
     texts = [r["text"] for r in j if r["kind"] == "transcript"]
     assert texts == ["Смотрите сюда, сейчас вылетит птичка", "Чик!", "Кажется, кто-то звонит в дверь"]
     dec = [(r["call"], r["effect"], r["result"]) for r in j if r["kind"] == "decision"]
@@ -155,3 +155,18 @@ def test_cli_replay_by_url(scene_video, tmp_path, monkeypatch):
     assert rc == 0
     assert (tmp_path / "rec" / "downloads" / "fakeid.mp4").exists()
     assert list((tmp_path / "rec").glob("replay_*_fakeid/report.html"))
+
+
+def test_replay_music_auto_and_scene_cut_changes_music(scene_video, tmp_path):
+    """Музыка от AI включается сама; «монтаж» в AUTO начинает новую сцену и гасит её."""
+    music = {"type": "music", "id": None, "reason": "фотограф", "confidence": "high",
+             "genre": "comedy", "mood": "playful", "energy": "medium", "tempo": "medium"}
+    summary, j, rp = run(scene_video, tmp_path, rules=[("птичка", music)], scene_cut_mode="AUTO")
+    dec = [(r["call"], r["effect"], r["result"]) for r in j if r["kind"] == "decision"]
+    assert ("music_style", "comedy/playful/medium/medium", "started") in dec
+    assert ("scene_cut", "new_scene", "started") in dec
+    t_music = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "music_style")
+    t_cut = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "scene_cut")
+    stops = [r for r in j if r["kind"] == "music" and r["action"] == "stop"]
+    assert t_music < t_cut and stops and stops[-1]["t"] >= t_cut
+    assert rp.music.current("music") is None

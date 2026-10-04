@@ -2,6 +2,9 @@
 
 Источник — генератор (если включён и исправен) или библиотечный файл того же состояния.
 При сбое генератора или опустевшем буфере — плавный переход на файл (или тишину), а не обрыв.
+Стиль из словаря (жанр/настроение/энергия/темп) — то же состояние, собранное на лету.
+Если звучать нечем, состояние всё равно считается активным (source="none"): иначе модель
+повторяла бы тот же выбор, а пульт показывал бы, что музыки нет, хотя она «выбрана».
 """
 
 from __future__ import annotations
@@ -11,15 +14,15 @@ from dataclasses import dataclass
 from ..audio.mixer import StreamBuffer
 from ..engine import Engine
 from ..journal import Journal
-from ..registry import MusicState, Registry
+from ..registry import MusicState, MusicStyle, Registry
 from .generators import MusicGenerator
 
 
 @dataclass
 class ActiveMusic:
     state: MusicState
-    source: str  # "generator" | "file"
-    voice_id: int
+    source: str  # "generator" | "file" | "none"
+    voice_id: int | None
     owner: str
     buffer: StreamBuffer | None = None
     underruns_seen: int = 0
@@ -55,8 +58,16 @@ class MusicDirector:
         state = self.registry.music_states.get(state_id)
         if state is None:
             raise KeyError(f"неизвестное музыкальное состояние: {state_id}")
+        return self.play_state(state, owner)
+
+    def set_style(self, style: MusicStyle, owner: str = "ai") -> str:
+        return self.play_state(self.registry.music_style_state(style), owner)
+
+    def play_state(self, state: MusicState, owner: str = "manual") -> str:
+        state_id = state.id
         cur = self.active.get(state.channel)
-        if cur and cur.state.id == state_id:
+        chosen = self.current(state.channel)
+        if chosen and chosen.id == state_id:
             return "already_playing"
 
         # Генератор один и обслуживает только шину music; атмосфера — из файлов.
@@ -66,15 +77,24 @@ class MusicDirector:
                 self.generator.update(state.generator)
                 cur.state = state
                 cur.owner = owner
-                self.journal.write("music", action="generator_update", state=state_id, owner=owner)
+                self.journal.write("music", action="generator_update", state=state_id, owner=owner,
+                                   preset=state.generator)
                 return "generator_update"
+            if self.generator.healthy and state.channel in self._pending:
+                # Генератор ещё набирает буфер: меняем пресет, не перезапуская поток.
+                _, _, buf = self._pending[state.channel]
+                self.generator.update(state.generator)
+                self._pending[state.channel] = (state, owner, buf)
+                self.journal.write("music", action="generator_update", state=state_id, owner=owner,
+                                   preset=state.generator)
+                return "generator_pending"
             if self.generator.healthy:
                 buf = StreamBuffer(self.buffer_seconds, self.sample_rate)
                 self._stop_generator()
                 self.generator.start(state.generator, buf)
                 self._pending[state.channel] = (state, owner, buf)
                 self.journal.write("music", action="generator_start", state=state_id, owner=owner,
-                                   generator=self.generator.name)
+                                   generator=self.generator.name, preset=state.generator)
                 self.tick()
                 return "generator_pending"
             self.journal.write("music", action="generator_unhealthy", state=state_id, error=self.generator.error)
@@ -84,7 +104,8 @@ class MusicDirector:
     def _start_file(self, state: MusicState, owner: str) -> str:
         if not state.file or state.file not in self.engine.sounds:
             self.stop(state.channel)
-            self.journal.write("music", action="no_source", state=state.id)
+            self.active[state.channel] = ActiveMusic(state, "none", None, owner)
+            self.journal.write("music", action="no_source", state=state.id, owner=owner, preset=state.generator)
             return "no_source"
         self._fade_out_current(state.channel)
         data = self.engine.sounds[state.file]
@@ -96,7 +117,7 @@ class MusicDirector:
 
     def _fade_out_current(self, channel: str) -> None:
         cur = self.active.pop(channel, None)
-        if cur:
+        if cur and cur.voice_id is not None:
             self.engine.mixer.stop(cur.voice_id, fade=cur.state.fade_out)
 
     def _stop_generator(self) -> None:
@@ -104,12 +125,20 @@ class MusicDirector:
             self.generator.stop()
 
     def stop(self, channel: str = "music") -> None:
-        self._pending.pop(channel, None)
+        pending = self._pending.pop(channel, None)
         cur = self.active.get(channel)
-        if cur and cur.source == "generator":
+        if pending or (cur and cur.source == "generator"):
             self._stop_generator()
         self._fade_out_current(channel)
-        self.journal.write("music", action="stop", channel=channel)
+        if cur or pending:
+            self.journal.write("music", action="stop", channel=channel)
+
+    def current(self, channel: str = "music") -> MusicState | None:
+        """Что выбрано на канале: играющее или ждущее предзаполнения буфера."""
+        if channel in self._pending:
+            return self._pending[channel][0]
+        cur = self.active.get(channel)
+        return cur.state if cur else None
 
     def stop_all(self) -> None:
         for ch in list(self.active) + list(self._pending):
@@ -150,7 +179,8 @@ class MusicDirector:
             "generator": self.generator.name if self.generator else None,
             "generator_enabled": self.use_generator,
             "generator_error": self.generator.error if self.generator else None,
-            "active": {ch: {"state": a.state.id, "source": a.source} for ch, a in self.active.items()},
+            "active": {ch: {"state": a.state.id, "label": a.state.label, "source": a.source}
+                       for ch, a in self.active.items()},
             "pending": {ch: s.id for ch, (s, _, _) in self._pending.items()},
         }
 
