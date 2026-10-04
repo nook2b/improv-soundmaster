@@ -124,7 +124,7 @@ def test_replay_realtime_threads(scene_video, tmp_path):
     summary = rp.run()
     j = load_journal(rp.out_dir / "journal.jsonl")
     assert summary["transcripts"] == 3
-    assert summary["brain_latency_p50"] >= 0.3
+    assert summary["brain_latency_p50"] >= 0.25  # подставная задержка 0,3 с; часы Windows — шаг ~15 мс
     assert 0 <= summary["asr_delay_p50"] < 0.5
     assert any(r["kind"] == "decision" and r["effect"] == "doorbell" for r in j)
 
