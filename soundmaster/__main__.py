@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("devices", help="список аудиоустройств")
     sub.add_parser("cameras", help="список камер macOS")
     rp = sub.add_parser("replay", help="прогнать запись через систему (ничего не звучит, всё в отчёт)")
-    rp.add_argument("media", help="видео или аудио файл записи")
+    rp.add_argument("media", help="видео/аудио файл записи или ссылка (YouTube, Drive — нужен yt-dlp)")
     rp.add_argument("--asr", choices=["mlx", "faster", "off"], help="распознавание (по умолчанию — из show.yaml)")
     rp.add_argument("--brain", choices=["openai", "gemini", "off"], help="облачная модель (по умолчанию — из show.yaml)")
     rp.add_argument("--transcript", help="готовая расшифровка вместо распознавания: строки «0:12-0:15 текст»")
@@ -62,8 +62,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "replay":
         from .replay import Replay, ReplayOptions, print_summary
 
+        from .media.download import download, is_url
+
+        media = Path(args.media).expanduser().resolve()
+        if is_url(args.media):
+            target = cfg.rel(cfg.get("recording", "dir", "../recordings")) / "downloads"
+            print(f"Скачиваю {args.media} → {target} …")
+            media = download(args.media, target)
+            print(f"Готово: {media}")
         opts = ReplayOptions(
-            media=Path(args.media).expanduser().resolve(), config=Path(args.config), speed=0 if args.fast else 1,
+            media=media, config=Path(args.config), speed=0 if args.fast else 1,
             asr=args.asr, brain=args.brain,
             transcript=Path(args.transcript).expanduser() if args.transcript else None,
             scene_cut_mode=args.scene_cut, clean_feed=args.clean_feed, video=not args.no_video,

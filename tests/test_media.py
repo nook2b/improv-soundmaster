@@ -122,3 +122,23 @@ def test_scenecut_ignores_light_change():
 def test_scenecut_ignores_slow_walk():
     frames = frames_with_rect(120, lambda i: min(1.0, i / 100))  # 10 с через сцену — это не монтаж
     assert detect(frames) == []
+
+
+def test_url_detection():
+    from soundmaster.media.download import is_url
+
+    assert is_url("https://youtu.be/Zha1fA7l6gY?si=x")
+    assert is_url("http://drive.google.com/file/d/1/view")
+    assert not is_url("/Users/me/scene.mp4") and not is_url("scene.mp4")
+
+
+def test_download_requires_yt_dlp(monkeypatch, tmp_path):
+    import shutil as sh
+
+    import pytest
+
+    from soundmaster.media import download as dl
+
+    monkeypatch.setattr(sh, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="yt-dlp"):
+        dl.download("https://youtu.be/x", tmp_path)

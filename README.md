@@ -113,6 +113,13 @@ pip install -e ".[asr-mac]"                 # один раз: распозна�
 python -m soundmaster replay ~/Movies/сцена.mp4 --asr mlx
 ```
 
+Вместо файла можно дать ссылку (YouTube, Google Drive): нужен `brew install yt-dlp`, видео
+скачается в `recordings/downloads/` (до 720p) и сразу прогонится:
+
+```bash
+python -m soundmaster replay "https://youtu.be/Zha1fA7l6gY" --asr mlx
+```
+
 Первый запуск скачивает модель распознавания (~1,5 ГБ, несколько минут). Без облачной модели
 отчёт покажет: что распознано и с какой задержкой, как сработали правила по словам
 («птичка» → взвести затвор, «чик» → сработать) и детектор «монтажа».
