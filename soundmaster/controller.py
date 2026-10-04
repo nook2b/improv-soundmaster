@@ -577,6 +577,9 @@ class Controller:
             return log(Decision("deduped", style.id, why))
         if why:
             return log(Decision("blocked", style.id, why))
+        prev = self.prev_scene_music()
+        if prev and (prev.genre, prev.instrument) == (style.genre, style.instrument):
+            return log(Decision("blocked", style.id, "same_as_prev_scene"))
         if self.music_mode != "AUTO" or not self.state.automation_enabled:
             # Подсказка хранит стиль как строку — при подтверждении он собирается заново.
             why_s = "background_suggest_only" if self.music_mode != "AUTO" else "automation_off"
@@ -588,6 +591,11 @@ class Controller:
         self.music_picks += 1
         self.music_history.append((self.state.scene_id, style.id))
         return log(Decision("started", style.id, "no_source" if result == "no_source" else None))
+
+    def prev_scene_music(self) -> MusicStyle | None:
+        """Чем закончилась музыка прошлой сцены: соседние сцены не звучат одинаково (жанр + состав)."""
+        past = [sid for scene, sid in self.music_history if scene < self.state.scene_id]
+        return MusicStyle.parse(past[-1]) if past else None
 
     def ai_scene_end(self, *, scene_id: int, connection_id: int, request_id: str | None = None,
                      reason: str = "", confidence: str | None = None) -> Decision:

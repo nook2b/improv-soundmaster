@@ -262,6 +262,20 @@ def test_first_pick_in_scene_can_be_corrected_sooner(system, clock):
     assert [sid for _, sid in c.music_history] == [NOIR.id, COMEDY.id]
 
 
+def test_neighbouring_scenes_do_not_repeat_genre_and_ensemble(system, clock):
+    c = neutral_auto(system)
+    drama = MusicStyle("drama", "tense", "low", "slow")
+    assert style(c, drama, clock).result == "started"
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.scene_cut("video")
+    d = style(c, MusicStyle("drama", "sad", "medium", "medium"), clock)  # другое настроение — тот же звук
+    assert (d.result, d.blocked_by) == ("blocked", "same_as_prev_scene")
+    assert style(c, MusicStyle("drama", "sad", "low", "slow", "piano"), clock).result == "started"
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.scene_cut("video")
+    assert style(c, drama, clock).result == "started"  # через сцену — можно
+
+
 def test_music_style_with_solo_instrument(system, clock):
     c = auto(system)
     s = MusicStyle("folk", "tender", "low", "slow", "guitar")
