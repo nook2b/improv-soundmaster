@@ -49,7 +49,7 @@ class BrokenGenerator(MusicGenerator):
     def start(self, preset, buffer):
         self.error = "нет сети"
 
-    def update(self, preset):
+    def update(self, preset, cut=False):
         pass
 
     def stop(self):
@@ -157,3 +157,60 @@ def test_import_sounds_converts_by_id_and_trims_silence(tmp_path):
     assert import_sounds(reg, src).skipped  # повторно без --force — не трогаем
     with pytest.raises(FileNotFoundError):
         import_sounds(reg, tmp_path / "нет такой папки")
+
+
+class RecordingGenerator(MusicGenerator):
+    """Сразу заполняет буфер и запоминает смены пресета."""
+
+    name = "rec"
+
+    def start(self, preset, buffer):
+        self.buffer = buffer
+        buffer.push(np.zeros((2 * SR, 2), np.float32))
+        self.updates = []
+
+    def update(self, preset, cut=False):
+        self.updates.append(cut)
+
+    def stop(self):
+        pass
+
+
+def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock):
+    from soundmaster.registry import MusicStyle
+
+    make, engine, mixer, journal = system
+    c = make()
+    c.music_mode, c.scene_cut_mode, c.scene_cut_music = "AUTO", "AUTO", "neutral"
+    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow")
+    gen = RecordingGenerator(SR)
+    c.music.generator, c.music.use_generator = gen, True
+    assert c.start_neutral_music()
+    c.music.tick()
+    assert c.music.active["music"].source == "generator"
+    vid = c.music.active["music"].voice_id
+    mixer.render(256)
+    voice = next(v for v in mixer.voices if v.id == vid)
+    c.ai_music_style(MusicStyle("drama", "tense", "low", "slow"), scene_id=c.state.scene_id,
+                     connection_id=c.state.connection_id, t_input_ref=clock.now())
+    assert gen.updates == [False]  # внутри сцены — плавный переход
+
+    clock.advance(c.scene_cut_cooldown + 1)
+    assert c.scene_cut("video").result == "started"
+    assert gen.updates == [False, True]  # нейтральная — сразу, без плавного перехода
+    mixer.render(256)
+    assert voice.env_target < 0.2 and not voice.stopping  # провал, но не тишина
+
+    clock.advance(1)
+    d = c.ai_music_style(MusicStyle("comedy", "playful", "low", "medium"), scene_id=c.state.scene_id,
+                         connection_id=c.state.connection_id, t_input_ref=clock.now())
+    assert d.result == "started" and gen.updates == [False, True, True]  # выбор в провале — тоже сразу
+
+    clock.advance(c.music.cut_dip_hold)
+    c.music.tick()
+    mixer.render(256)
+    assert voice.env_target == 1.0  # новая музыка поднимается
+    clock.advance(c.music_first_hold + 1)
+    d = c.ai_music_style(MusicStyle("romance", "sad", "low", "slow"), scene_id=c.state.scene_id,
+                         connection_id=c.state.connection_id, t_input_ref=clock.now())
+    assert d.result == "started" and gen.updates[-1] is False  # внутри сцены — снова плавно

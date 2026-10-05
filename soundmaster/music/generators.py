@@ -38,8 +38,8 @@ class MusicGenerator(ABC):
     def start(self, preset: dict[str, Any], buffer: StreamBuffer) -> None: ...
 
     @abstractmethod
-    def update(self, preset: dict[str, Any]) -> None:
-        """Сменить состояние без остановки потока."""
+    def update(self, preset: dict[str, Any], cut: bool = False) -> None:
+        """Сменить состояние без остановки потока; cut — сразу, без плавного перехода («монтаж»)."""
 
     @abstractmethod
     def stop(self) -> None: ...
@@ -67,7 +67,7 @@ class TestToneGenerator(MusicGenerator):
         self._thread = threading.Thread(target=self._run, name="test-tone-gen", daemon=True)
         self._thread.start()
 
-    def update(self, preset: dict[str, Any]) -> None:
+    def update(self, preset: dict[str, Any], cut: bool = False) -> None:
         self.preset = dict(preset)
 
     def stop(self) -> None:
@@ -162,11 +162,12 @@ class LyriaRealtimeGenerator(MusicGenerator):
         await self._session.set_weighted_prompts(
             prompts=[types.WeightedPrompt(text=p["text"], weight=float(p.get("weight", 1.0))) for p in prompts])
 
-    async def _apply(self, preset: dict[str, Any], previous: dict[str, Any] | None = None) -> None:
+    async def _apply(self, preset: dict[str, Any], previous: dict[str, Any] | None = None,
+                     cut: bool = False) -> None:
         from google.genai import types  # type: ignore
 
         new_prompts = preset.get("prompts", [])
-        if previous and previous.get("prompts") and self.transition_s > 0:
+        if previous and previous.get("prompts") and self.transition_s > 0 and not cut:
             # Плавно: несколько промежуточных смесей старого и нового описания.
             for i in range(1, self.steps + 1):
                 await self._set_prompts(blend_prompts(previous["prompts"], new_prompts, i / self.steps))
@@ -183,6 +184,10 @@ class LyriaRealtimeGenerator(MusicGenerator):
             new = preset["config"]
             if previous is not None and any(k in new and old.get(k) != new.get(k) for k in ("bpm", "scale")):
                 await self._session.reset_context()
+                return
+        if cut:
+            # «Монтаж»: громкость в провале, рывок сброса не слышен — новая музыка без хвоста старой.
+            await self._session.reset_context()
 
     async def _main(self) -> None:
         try:
@@ -218,16 +223,16 @@ class LyriaRealtimeGenerator(MusicGenerator):
                 return
             await asyncio.sleep(min(4.0, 0.5 * 2 ** failures))  # переподключение через 1, 2, 4 с
 
-    def update(self, preset: dict[str, Any]) -> None:
+    def update(self, preset: dict[str, Any], cut: bool = False) -> None:
         previous, self._preset = self._preset, dict(preset)
         if self._session and self._loop:
-            self._loop.call_soon_threadsafe(self._start_ramp, self._preset, previous)
+            self._loop.call_soon_threadsafe(self._start_ramp, self._preset, previous, cut)
 
-    def _start_ramp(self, preset: dict[str, Any], previous: dict[str, Any]) -> None:
+    def _start_ramp(self, preset: dict[str, Any], previous: dict[str, Any], cut: bool = False) -> None:
         # Новый переход отменяет незаконченный.
         if self._ramp and not self._ramp.done():
             self._ramp.cancel()
-        self._ramp = asyncio.ensure_future(self._apply(preset, previous))
+        self._ramp = asyncio.ensure_future(self._apply(preset, previous, cut))
 
     def stop(self) -> None:
         self._stopping = True

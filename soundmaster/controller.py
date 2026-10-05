@@ -249,7 +249,7 @@ class Controller:
         if not keep_music:
             self.music_t_set = None
             self.music_picks = 0
-            if self.scene_cut_music == "neutral" and self.start_neutral_music():
+            if self.scene_cut_music == "neutral" and self.start_neutral_music(cut=True):
                 pass  # атмосфера прошлого места погасла, музыка плавно уходит в нейтральную (без паузы)
             else:
                 self.music.stop_all()
@@ -260,8 +260,8 @@ class Controller:
             cb(self.state.scene_id, source)
         return self.state.scene_id
 
-    def start_neutral_music(self) -> bool:
-        """Нейтральная музыка, пока модель не поняла сцену: в начале шоу и после «монтажа».
+    def start_neutral_music(self, cut: bool = False) -> bool:
+        """Нейтральная музыка, пока модель не поняла сцену: в начале шоу и после «монтажа» (cut).
 
         Только если музыка автоматическая и словарь/нейтральный стиль заданы. False — не включали.
         """
@@ -269,7 +269,7 @@ class Controller:
                 and self.music_mode == "AUTO" and self.state.automation_enabled):
             return False
         self.music.stop("ambience")
-        self.music.set_style(self.music_neutral, owner="system")
+        self.music.set_style(self.music_neutral, owner="system", cut=cut)
         self.journal.write("system", action="neutral_music", scene_id=self.state.scene_id,
                            style=self.music_neutral.id)
         return True

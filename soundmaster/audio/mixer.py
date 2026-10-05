@@ -233,6 +233,17 @@ class Mixer:
 
         self._cmds.append(cmd)
 
+    def fade(self, voice_id: int, gain: float, seconds: float) -> None:
+        """Плавно увести громкость голоса к gain (0..1), не останавливая его."""
+        samples = int(seconds * self.sample_rate)
+
+        def cmd() -> None:
+            for v in self.voices:
+                if v.id == voice_id and not v.stopping:
+                    v.fade_to(max(gain, 1e-4), samples)
+
+        self._cmds.append(cmd)
+
     def stop_all(self, fade: float = 0.03) -> None:
         self.stop(fade=fade)
 
