@@ -99,3 +99,23 @@ def test_bad_profile_rejected(tmp_path):
     p.write_text("channels:\n  - {channel: 1, role: guitar}\n", encoding="utf-8")
     with pytest.raises(InputProfileError):
         load_input_profile(p)
+
+
+def test_stream_buffer_bridges_a_gap_with_recent_music_then_crossfades_back():
+    from soundmaster.audio.mixer import StreamBuffer
+
+    sr = 1000
+    b = StreamBuffer(8, sr, bridge_seconds=2, bridge_max=5, bridge_xfade=0.1)
+    music = np.stack([np.linspace(0.1, 0.5, 3 * sr)] * 2, axis=1).astype(np.float32)
+    b.push(music)
+    out, _ = b.read(3 * sr)
+    assert np.allclose(out, music)
+    gap, _ = b.read(sr)  # генератор молчит: играет петля из недавнего, не тишина
+    assert b.bridging and b.bridges == 1 and b.underruns == 0
+    assert np.abs(gap).min() > 0.1 and np.abs(gap).max() <= 0.5 + 1e-6
+    b.push(np.full((sr, 2), 0.9, np.float32))
+    back, _ = b.read(sr)
+    assert not b.bridging
+    assert back[0, 0] < 0.9 and np.allclose(back[200:], 0.9)  # плавный уход с петли за 0,1 с
+    b.read(10 * sr)  # долгий обрыв: мостик не дольше bridge_max — дальше пусто, режиссёр уйдёт на резерв
+    assert b.underruns > 0

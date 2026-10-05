@@ -49,19 +49,41 @@ class BufferSource:
 
 
 class StreamBuffer:
-    """Кольцевой буфер для потоковой музыки (генератор пишет, микшер читает)."""
+    """Кольцевой буфер для потоковой музыки (генератор пишет, микшер читает).
 
-    def __init__(self, max_seconds: float, sample_rate: int):
+    «Мостик»: если поток прервался (генератор переподключается), буфер повторяет последние
+    `bridge_seconds` сыгранной музыки (не дольше `bridge_max` подряд), а когда звук вернулся —
+    за `bridge_xfade` секунд переходит на него. Так обрыв сети не превращается в тишину.
+    """
+
+    def __init__(self, max_seconds: float, sample_rate: int, bridge_seconds: float = 6.0,
+                 bridge_max: float = 30.0, bridge_xfade: float = 0.5):
         self.max_frames = int(max_seconds * sample_rate)
         self._chunks: deque[np.ndarray] = deque()
         self._frames = 0
         self._lock = threading.Lock()
         self.underruns = 0
         self.closed = False
+        # История сыгранного и петля мостика — память выделена заранее (читает аудио-callback).
+        self._hist = np.zeros((int(bridge_seconds * sample_rate), 2), np.float32)
+        self._hist_pos = 0
+        self._hist_len = 0
+        self._loop = np.zeros_like(self._hist)
+        self._loop_len = 0
+        self._loop_pos = 0
+        self._bridge_max = int(bridge_max * sample_rate)
+        self._xfade = max(1, int(bridge_xfade * sample_rate))
+        self._xfade_left = 0
+        self.bridged_frames = 0  # подряд в текущем мостике
+        self.bridges = 0  # сколько раз включался мостик
 
     @property
     def frames(self) -> int:
         return self._frames
+
+    @property
+    def bridging(self) -> bool:
+        return self.bridged_frames > 0
 
     def push(self, chunk: np.ndarray) -> None:
         with self._lock:
@@ -86,9 +108,68 @@ class StreamBuffer:
                 else:
                     self._chunks[0] = c[take:]
                 self._frames -= take
+        if filled and self.bridged_frames:
+            self.bridged_frames = 0
+            self._xfade_left = self._xfade  # звук вернулся: плавно уходим с петли
+        if filled and self._xfade_left:
+            m = min(filled, self._xfade_left)
+            k = (self._xfade - self._xfade_left + np.arange(1, m + 1, dtype=np.float32)) / self._xfade
+            out[:m] = out[:m] * k[:, None] + self._loop_read(m) * (1 - k)[:, None]
+            self._xfade_left -= m
+        if filled:
+            self._remember(out[:filled])
         if filled < n and not self.closed:
-            self.underruns += 1
+            gap = n - filled
+            if self._hist_len >= self._xfade * 2 and self.bridged_frames + gap <= self._bridge_max:
+                if not self.bridged_frames and not self._xfade_left:
+                    self._start_loop()
+                out[filled:] = self._loop_read(gap)
+                self.bridged_frames += gap
+            else:
+                self.underruns += 1
         return out, self.closed and self._frames == 0
+
+    def _remember(self, x: np.ndarray) -> None:
+        h = len(self._hist)
+        x = x[-h:]
+        end = self._hist_pos + len(x)
+        if end <= h:
+            self._hist[self._hist_pos:end] = x
+        else:
+            k = h - self._hist_pos
+            self._hist[self._hist_pos:] = x[:k]
+            self._hist[: len(x) - k] = x[k:]
+        self._hist_pos = end % h
+        self._hist_len = min(h, self._hist_len + len(x))
+
+    def _start_loop(self) -> None:
+        """Петля из последних сыгранных секунд; стык петли сглажен перекрёстным затуханием."""
+        h, L = len(self._hist), self._hist_len
+        start = (self._hist_pos - L) % h
+        if start + L <= h:
+            self._loop[:L] = self._hist[start:start + L]
+        else:
+            k = h - start
+            self._loop[:k] = self._hist[start:]
+            self._loop[k:L] = self._hist[: L - k]
+        x = self._xfade
+        k = np.linspace(0, 1, x, dtype=np.float32)[:, None]
+        self._loop[:x] = self._loop[:x] * k + self._loop[L - x:L] * (1 - k)
+        self._loop_len = L - x
+        self._loop_pos = 0
+        self.bridges += 1
+
+    def _loop_read(self, n: int) -> np.ndarray:
+        out = np.empty((n, 2), np.float32)
+        got = 0
+        while got < n and self._loop_len:
+            take = min(n - got, self._loop_len - self._loop_pos)
+            out[got:got + take] = self._loop[self._loop_pos:self._loop_pos + take]
+            got += take
+            self._loop_pos = (self._loop_pos + take) % self._loop_len
+        if got < n:
+            out[got:] = 0
+        return out
 
 
 class Voice:

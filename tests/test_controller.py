@@ -276,6 +276,22 @@ def test_neighbouring_scenes_do_not_repeat_genre_and_ensemble(system, clock):
     assert style(c, drama, clock).result == "started"  # через сцену — можно
 
 
+def test_scene_instrument_locked_after_first_correction(system, clock):
+    c = neutral_auto(system)
+    assert style(c, MusicStyle("drama", "tense", "low", "slow"), clock).result == "started"
+    clock.advance(c.music_first_hold + 1)
+    d = style(c, MusicStyle("drama", "tense", "low", "slow", "strings"), clock)  # первое уточнение — можно
+    assert d.result == "started"
+    clock.advance(c.music_min_hold + 1)
+    d = style(c, MusicStyle("drama", "tense", "low", "slow", "auto"), clock)  # только состав — уже не меняем
+    assert d.result == "deduped"
+    d = style(c, MusicStyle("drama", "sad", "low", "slow", "piano"), clock)  # поворот: настроение да, состав нет
+    assert d.result == "started" and c.music.current("music").id == "style:drama/sad/low/slow/strings"
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.scene_cut("video")
+    assert style(c, MusicStyle("folk", "tender", "low", "slow", "guitar"), clock).result == "started"  # новая сцена
+
+
 def test_music_style_with_solo_instrument(system, clock):
     c = auto(system)
     s = MusicStyle("folk", "tender", "low", "slow", "guitar")

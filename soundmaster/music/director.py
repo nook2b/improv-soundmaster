@@ -26,6 +26,7 @@ class ActiveMusic:
     owner: str
     buffer: StreamBuffer | None = None
     underruns_seen: int = 0
+    bridges_seen: int = 0
 
 
 class MusicDirector:
@@ -192,6 +193,10 @@ class MusicDirector:
         for channel, cur in list(self.active.items()):
             if cur.source != "generator" or cur.buffer is None:
                 continue
+            if cur.buffer.bridges > cur.bridges_seen:
+                cur.bridges_seen = cur.buffer.bridges
+                self.journal.write("music", action="generator_bridge", state=cur.state.id,
+                                   reason="поток прервался — повторяем последние секунды, пока генератор переподключается")
             new_underruns = cur.buffer.underruns - cur.underruns_seen
             failed = self.generator is not None and not self.generator.healthy
             if failed or new_underruns > self.max_underruns:

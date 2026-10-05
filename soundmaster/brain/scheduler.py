@@ -145,6 +145,9 @@ class BrainScheduler:
         past = [sid for scene, sid in c.music_history if scene != c.state.scene_id][-3:]
         if past:
             lines.append("Музыка прошлых сцен (не повторяй без причины): " + "; ".join(past) + ".")
+        kept = c.scene_instrument()
+        if kept is not None:
+            lines.append(f"Состав в этой сцене закреплён: instrument {kept} — до следующей сцены не меняется.")
         prev = c.prev_scene_music()
         if prev:
             lines.append(f"ЗАПРЕЩЕНО в этой сцене: genre {prev.genre} с instrument {prev.instrument} "

@@ -568,6 +568,11 @@ class Controller:
         bad = vocab.validate(style)
         if bad:
             return log(Decision("blocked", style.id, bad))
+        kept = self.scene_instrument()
+        if kept is not None and style.instrument != kept:
+            # Состав выбран на сцену: поворот меняет настроение/энергию, а не инструменты.
+            extra["asked_instrument"] = style.instrument
+            style = MusicStyle(style.genre, style.mood, style.energy, style.tempo, kept)
         target = f"style:{style.id}"
         why = self._music_gate("music", target, scene_id=scene_id, connection_id=connection_id,
                                t_input_ref=t_input_ref)
@@ -591,6 +596,13 @@ class Controller:
         self.music_picks += 1
         self.music_history.append((self.state.scene_id, style.id))
         return log(Decision("started", style.id, "no_source" if result == "no_source" else None))
+
+    def scene_instrument(self) -> str | None:
+        """Состав, закреплённый за сценой: после первого выбора и его уточнения не меняется."""
+        if self.music_picks < 2:
+            return None
+        cur = [sid for scene, sid in self.music_history if scene == self.state.scene_id]
+        return MusicStyle.parse(cur[-1]).instrument if cur else None
 
     def prev_scene_music(self) -> MusicStyle | None:
         """Чем закончилась музыка прошлой сцены: соседние сцены не звучат одинаково (жанр + состав)."""

@@ -214,3 +214,21 @@ def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock
     d = c.ai_music_style(MusicStyle("romance", "sad", "low", "slow"), scene_id=c.state.scene_id,
                          connection_id=c.state.connection_id, t_input_ref=clock.now())
     assert d.result == "started" and gen.updates[-1] is False  # внутри сцены — снова плавно
+
+
+def test_generator_gap_is_bridged_not_fallen_back(system, clock):
+    from soundmaster.registry import MusicStyle
+
+    make, engine, mixer, journal = system
+    c = make()
+    c.music_mode = "AUTO"
+    gen = RecordingGenerator(SR)
+    c.music.generator, c.music.use_generator = gen, True
+    c.music.set_style(MusicStyle("drama", "tense", "low", "slow"), owner="ai")
+    c.music.tick()
+    for _ in range(3 * SR // 256):  # 2 с звука кончились — генератор «переподключается»
+        mixer.render(256)
+    c.music.tick()
+    assert c.music.active["music"].source == "generator"
+    assert any(r.get("action") == "generator_bridge" for r in journal.records)
+    assert not any(r.get("action") == "fallback" for r in journal.records)
