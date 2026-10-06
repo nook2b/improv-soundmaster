@@ -136,22 +136,27 @@ music_states:
       prompts: [{ text: "suspenseful low drones, ticking pulse, thriller", weight: 1.0 }]
       config: { bpm: 90, density: 0.5, brightness: 0.3 }
 
+  # Атмосфера места — только вручную (ai: false): под речь и музыку гул толпы даёт слишком много шума
+  # (решение Ивана, 2026-10-06). ai: true — модель снова сможет включать её сама.
   restaurant:
     label: Ресторан (атмосфера)
     channel: ambience
     file: ambience/restaurant.wav
+    ai: false
     hotkey: "e"
 
   restaurant_outside:
     label: Кафе на улице (атмосфера)
     channel: ambience
     file: ambience/restaurant_outside.wav
+    ai: false
     hotkey: "t"
 
   rain:
     label: Дождь (атмосфера)
     channel: ambience
     file: ambience/rain.wav
+    ai: false
     hotkey: "r"
 
 # Словарь музыки для генератора (Lyria RealTime). Модель выбирает по одному слову из каждого

@@ -240,7 +240,7 @@ def neutral_auto(system):
 
 def test_scene_cut_goes_to_neutral_then_model_choice_replaces_it_at_once(system, clock):
     c = neutral_auto(system)
-    c.ai_music("restaurant", scene_id=1, connection_id=0, t_input_ref=clock.now())
+    c.manual_music("restaurant")
     style(c, NOIR, clock)
     clock.advance(c.scene_cut_cooldown + 1)
     assert c.scene_cut("video").result == "started"
@@ -336,11 +336,20 @@ def test_music_style_rejects_unknown_words_and_late(system, clock):
     assert style(c, NOIR, clock, t_input_ref=clock.now() - 10).result == "late_dropped"
 
 
-def test_ambience_auto(system, clock):
+def test_ambience_is_manual_only(system, clock):
     c = auto(system)
     d = c.ai_music("restaurant", scene_id=c.state.scene_id, connection_id=c.state.connection_id,
                    t_input_ref=clock.now())
-    assert d.result == "started" and c.music.current("ambience").id == "restaurant"
+    assert (d.result, d.blocked_by) == ("blocked", "manual_only") and c.music.current("ambience") is None
+    c.manual_music("restaurant")  # человек с пульта — можно
+    assert c.music.current("ambience").id == "restaurant"
+
+
+def test_model_does_not_see_manual_only_ambience(registry):
+    from soundmaster.brain.prompt import action_types, allowed_ids, system_text
+
+    assert "background" not in action_types(registry)
+    assert "restaurant" not in allowed_ids(registry) and "restaurant" not in system_text(registry)
 
 
 def test_show_starts_with_neutral_music(system, clock):

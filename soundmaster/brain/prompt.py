@@ -67,9 +67,11 @@ MUSIC_RULES = """\
   дальше до «монтажа» не меняется. При повороте внутри сцены меняй mood/energy/tempo, а не
   инструменты и не «для разнообразия». Не повторяй жанр и состав прошлых сцен без причины. Соседние сцены не должны звучать одинаково: тот же жанр с тем
   же составом, что в прошлой сцене, программа не включит (см. «ЗАПРЕЩЕНО» в состоянии).
+"""
+
+AMBIENCE_RULES = """\
 - background — только атмосфера МЕСТА со своим звуком (список ФОН), и только если это место
-  прямо названо или показано в сцене: ресторан — актёры внутри кафе/ресторана/бара; кафе на
-  улице — летняя веранда, уличное кафе, площадь; дождь — актёры говорят о дожде или грозе. Не используй атмосферу для настроения — для этого есть music.
+  прямо названо или показано в сцене. Не используй атмосферу для настроения — для этого есть music.
 """
 
 
@@ -83,8 +85,10 @@ def library_text(registry: Registry) -> str:
         if e.human_only:
             how = "только предложить технику (effect), громкий"
         lines.append(f"- {e.id} — {e.label} — {how}")
-    lines.append("\nФОН (background, id):")
-    for m in background_states(registry):
+    bg = background_states(registry)
+    if bg:
+        lines.append("\nФОН (background, id):")
+    for m in bg:
         kind = "атмосфера" if m.channel == "ambience" else "музыка"
         lines.append(f"- {m.id} — {m.label} ({kind})")
     v = registry.vocabulary
@@ -99,8 +103,11 @@ def library_text(registry: Registry) -> str:
 
 
 def background_states(registry: Registry) -> list:
-    """Что модель выбирает через background. Со словарём музыка идёт через music, здесь — только атмосфера."""
-    states = list(registry.music_states.values())
+    """Что модель выбирает через background. Со словарём музыка идёт через music, здесь — только атмосфера.
+
+    Состояния с ai: false (например, гул ресторана) модель не видит — их включает только человек.
+    """
+    states = [m for m in registry.music_states.values() if m.ai]
     if registry.vocabulary is not None:
         states = [m for m in states if m.channel == "ambience"]
     return states
@@ -122,7 +129,9 @@ def allowed_ids(registry: Registry) -> list[str]:
 
 
 def action_types(registry: Registry) -> list[str]:
-    return [t for t in ACTION_TYPES if t != "music" or registry.vocabulary is not None]
+    has_bg = bool(background_states(registry))
+    return [t for t in ACTION_TYPES
+            if (t != "music" or registry.vocabulary is not None) and (t != "background" or has_bg)]
 
 
 def openai_schema(registry: Registry) -> dict[str, Any]:
@@ -178,5 +187,8 @@ def gemini_schema(registry: Registry) -> dict[str, Any]:
 
 
 def system_text(registry: Registry) -> str:
-    rules = MUSIC_RULES if registry.vocabulary is not None else BACKGROUND_RULES
+    if registry.vocabulary is None:
+        rules = BACKGROUND_RULES
+    else:
+        rules = MUSIC_RULES + (AMBIENCE_RULES if background_states(registry) else "")
     return SYSTEM_PROMPT.replace("{background_rules}", rules) + "\n" + library_text(registry)

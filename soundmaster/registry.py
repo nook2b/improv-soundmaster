@@ -74,6 +74,7 @@ class MusicState:
     fade_in: float = 2.0
     fade_out: float = 3.0
     gain_db: float = -6.0
+    ai: bool = True  # False — модель не включает, только человек с пульта
 
 
 @dataclass
@@ -303,6 +304,7 @@ def load_registry(path: str | Path) -> Registry:
             fade_in=float(raw.get("fade_in", 2.0)),
             fade_out=float(raw.get("fade_out", 3.0)),
             gain_db=float(raw.get("gain_db", -6.0)),
+            ai=bool(raw.get("ai", True)),
         )
         _require(states[sid].file or states[sid].generator, f"{sid}: нужен file или generator")
         hk = states[sid].hotkey

@@ -129,7 +129,7 @@ def test_schema_and_prompt():
     reg = registry()
     schema = openai_schema(reg)
     ids = schema["properties"]["actions"]["items"]["properties"]["id"]["enum"]
-    assert "doorbell" in ids and "restaurant" in ids and None in ids
+    assert "doorbell" in ids and "restaurant" not in ids and None in ids  # атмосфера — только вручную
     assert "scene_end" not in ids  # отбивка — отдельным типом действия, не как эффект
     # Со словарём музыка выбирается через music (жанр/настроение/…), а не id состояния-файла.
     assert "romantic" not in ids

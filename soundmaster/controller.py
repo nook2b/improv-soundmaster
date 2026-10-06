@@ -535,6 +535,8 @@ class Controller:
 
         if state_id not in self.registry.music_states:
             return log(Decision("blocked", state_id, "unknown_music_state"))
+        if not self.registry.music_states[state_id].ai:
+            return log(Decision("blocked", state_id, "manual_only"))
         channel = self.registry.music_states[state_id].channel
         why = self._music_gate(channel, state_id, scene_id=scene_id, connection_id=connection_id,
                                t_input_ref=t_input_ref)
