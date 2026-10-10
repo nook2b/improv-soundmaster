@@ -9,16 +9,28 @@ from soundmaster.controller import Controller
 from soundmaster.engine import Engine
 from soundmaster.journal import Journal
 from soundmaster.music.director import MusicDirector
-from soundmaster.registry import load_registry
+from soundmaster.registry import MusicState, load_registry
 
 ROOT = Path(__file__).resolve().parent.parent
 SR = 8000
 
 
+def with_test_music(reg):
+    """Музыка-файлы с пресетом генератора (в рабочем реестре их нет — проверяем саму механику)."""
+    gen = {"root_hz": 220, "bpm": 60, "chord": [0, 4, 7], "prompts": [{"text": "x", "weight": 1.0}],
+           "config": {"bpm": 70}}
+    reg.music_states["romantic"] = MusicState("romantic", "music", "Романтика", "q", "music/romantic.wav", dict(gen))
+    reg.music_states["tension"] = MusicState("tension", "music", "Напряжение", "w", "music/tension.wav",
+                                             {**gen, "root_hz": 110})
+    reg.vocabulary.moods["tense"].fallback = "tension"
+    reg.vocabulary.moods["tender"].fallback = "romantic"
+    return reg
+
+
 @pytest.fixture
 def registry(tmp_path):
     # Своя пустая папка звуков: тесты не зависят от того, что лежит в sounds/ (пул, импорт).
-    reg = load_registry(ROOT / "config" / "registry.yaml")
+    reg = with_test_music(load_registry(ROOT / "config" / "registry.yaml"))
     reg.sounds_dir = tmp_path / "sounds"
     return reg
 

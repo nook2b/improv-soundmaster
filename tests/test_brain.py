@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def registry():
-    return load_registry(ROOT / "config" / "registry.yaml")
+    from conftest import with_test_music
+
+    return with_test_music(load_registry(ROOT / "config" / "registry.yaml"))
 
 
 async def serve(handler):

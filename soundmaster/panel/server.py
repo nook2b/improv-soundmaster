@@ -26,6 +26,10 @@ def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"result": c.manual_music(msg.get("state"))}
     elif cmd == "pool":
         return {"result": c.manual_pool(str(msg["genre"]))}
+    elif cmd == "release_music":
+        return {"result": "released" if c.release_music() else "nothing_to_release"}
+    elif cmd == "stop_channel":
+        c.manual_stop_channel("ambience" if msg.get("channel") == "ambience" else "music")
     elif cmd == "confirm":
         d = c.confirm(int(msg["id"]))
         return {"result": d.result, "blocked_by": d.blocked_by}

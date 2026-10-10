@@ -371,3 +371,33 @@ def test_no_neutral_music_when_music_is_not_automatic(system, clock):
     c = neutral_auto(system)
     c.music_mode = "SUGGEST"
     assert not c.start_neutral_music() and c.music.current("music") is None
+
+
+def test_manual_mode_new_scene_keeps_operator_music_and_camera_only_suggests(system, clock):
+    c = neutral_auto(system)
+    c.manual_music("restaurant")
+    c.set_automation(False)  # «Ручное управление»
+    clock.advance(c.scene_cut_cooldown + 1)
+    assert c.scene_cut("video").result == "suggested"  # камера только подсказывает
+    c.new_scene()  # человек сам начал сцену
+    assert c.music.current("ambience").id == "restaurant"  # его атмосфера не гаснет
+    d = style(c, COMEDY, clock)
+    assert d.result == "suggested"  # AI музыку не включает, только предлагает
+
+
+def test_take_over_music_then_give_it_back(system, clock):
+    c = neutral_auto(system)
+    assert style(c, NOIR, clock).result == "started"
+    c.manual_music("romantic")  # перехват в автопилоте
+    clock.advance(c.music_min_hold + 1)
+    assert style(c, COMEDY, clock).blocked_by == "manual_music"
+    assert c.release_music()
+    assert style(c, COMEDY, clock).result == "started"  # AI сразу снова ведёт музыку
+    assert not c.release_music()  # нечего возвращать
+
+
+def test_stop_ai_silences_transition_music_too(system, clock):
+    c = neutral_auto(system)
+    assert c.start_neutral_music()
+    c.stop_ai_sound()
+    assert c.music.current("music") is None and not c.state.automation_enabled

@@ -166,7 +166,7 @@ class MusicDirector:
         assert v is not None
         st = t.style
         label = (f"{v.genres[st.genre].label} {t.n}/{of} · {v.instruments[st.instrument].label}, "
-                 f"{v.moods[st.mood].label} (запись)")
+                 f"{v.moods[st.mood].label}")
         return MusicState(id=f"pool:{st.genre}/{t.n}", channel="music", label=label, file=t.file,
                           fade_in=3.0, fade_out=3.0, gain_db=v.gain_db)
 
@@ -203,7 +203,7 @@ class MusicDirector:
         t = self._pool_for(state)
         if t is None:
             return self._start_file(state, owner)
-        st = replace(state, file=t.file, label=f"{state.label} (запись)", fade_in=3.0, fade_out=3.0)
+        st = replace(state, file=t.file, fade_in=3.0, fade_out=3.0)
         self.journal.write("music", action="pool_fallback", state=state.id, file=t.file)
         return self._play_pool_track(st, owner)
 
@@ -355,7 +355,7 @@ class MusicDirector:
             "generator": self.generator.name if self.generator else None,
             "generator_enabled": self.use_generator,
             "generator_error": self.generator.error if self.generator else None,
-            "active": {ch: {"state": a.state.id, "label": a.state.label, "source": a.source}
+            "active": {ch: {"state": a.state.id, "label": a.state.label, "source": a.source, "owner": a.owner}
                        for ch, a in self.active.items()},
             "pending": {ch: s.id for ch, (s, _, _) in self._pending.items()},
             "pool_loading": self._pool_pending[0].id if self._pool_pending else None,

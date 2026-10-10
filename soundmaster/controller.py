@@ -256,7 +256,9 @@ class Controller:
         if not keep_music:
             self.music_t_set = None
             self.music_picks = 0
-            if self.scene_cut_music == "neutral" and self.start_neutral_music(cut=True):
+            if not self.state.automation_enabled:
+                pass  # ручное управление: музыку и атмосферу ведёт человек, новая сцена их не трогает
+            elif self.scene_cut_music == "neutral" and self.start_neutral_music(cut=True):
                 pass  # атмосфера прошлого места погасла, музыка плавно уходит в нейтральную (без паузы)
             else:
                 self.music.stop_all()
@@ -395,9 +397,24 @@ class Controller:
             self._disarm("stop_ai")
         self.engine.mixer.stop(owner="ai", fade=0.3)
         for ch, a in list(self.music.active.items()):
-            if a.owner == "ai":
+            if a.owner in ("ai", "system"):
                 self.music.stop(ch)
         self.journal.write("operator", action="stop_ai_sound")
+
+    def release_music(self) -> bool:
+        """Вернуть музыку автоматике: модель заменит её, как только поймёт сцену (сразу, без ожидания)."""
+        a = self.music.active.get("music")
+        if not (a and a.owner == "manual"):
+            return False
+        a.owner = "system"
+        self.music_t_set = None
+        self.music_picks = 0
+        self.journal.write("operator", action="release_music", state=a.state.id)
+        return True
+
+    def manual_stop_channel(self, channel: str) -> None:
+        self.music.stop(channel)
+        self.journal.write("operator", action="stop_channel", channel=channel)
 
     def stop_all(self) -> None:
         self.music.stop_all()

@@ -138,7 +138,7 @@ class BrainScheduler:
             sid = st.id.removeprefix("style:")
             active = c.music.active.get(ch)
             if ch == "music" and active is not None and active.owner == "system":
-                lines.append(f"{title}: переходная после «монтажа» ({st.label}) — замени, как только поймёшь сцену.")
+                lines.append(f"{title}: переходная ({st.label}) — замени, как только поймёшь сцену.")
                 continue
             since = f", выбрана {int(now - c.music_t_set)} с назад" if ch == "music" and c.music_t_set else ""
             lines.append(f"{title}: {st.label} [{sid}]{since}.")

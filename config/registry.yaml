@@ -105,37 +105,10 @@ effects:
     mode: SUGGEST
     hotkey: "0"
 
-# Музыкальные состояния: AI выбирает id, программа — файл и/или проверенный пресет генератора.
-# file — библиотечный вариант и резерв генератора. generator — пресет для включённого генератора:
-#   test_tone:      root_hz, bpm, chord (полутоны), brightness
-#   lyria_realtime: prompts [{text, weight}], config {bpm, density, brightness, ...}
+# Музыкальные состояния — звуки-«фоны» из файлов. Сейчас здесь только атмосфера места (включается
+# вручную); музыку ведут словарь music_vocabulary (генератор) и пул записей music_pool (ниже).
+# Можно добавить и музыку-файл: {label, channel: music, file, hotkey, generator: {...}}.
 music_states:
-  romantic:
-    label: Романтика
-    channel: music
-    file: music/romantic.wav
-    hotkey: "q"
-    generator:
-      root_hz: 220
-      bpm: 60
-      chord: [0, 4, 7, 11]
-      brightness: 0.3
-      prompts: [{ text: "soft romantic piano, warm strings, slow", weight: 1.0 }]
-      config: { bpm: 70, density: 0.3, brightness: 0.4 }
-
-  tension:
-    label: Напряжение
-    channel: music
-    file: music/tension.wav
-    hotkey: "w"
-    generator:
-      root_hz: 110
-      bpm: 90
-      chord: [0, 1, 6]
-      brightness: 0.6
-      prompts: [{ text: "suspenseful low drones, ticking pulse, thriller", weight: 1.0 }]
-      config: { bpm: 90, density: 0.5, brightness: 0.3 }
-
   # Атмосфера места — только вручную (ai: false): под речь и музыку гул толпы даёт слишком много шума
   # (решение Ивана, 2026-10-06). ai: true — модель снова сможет включать её сама.
   restaurant:
@@ -162,7 +135,7 @@ music_states:
 # Словарь музыки для генератора (Lyria RealTime). Модель выбирает по одному слову из каждого
 # раздела (жанр / настроение / энергия / темп), программа собирает из них запрос к генератору.
 # Свободный текст от модели не принимается. text — для генератора (по-английски), label — для пульта.
-# fallback у настроения — музыкальное состояние-файл, если генератор недоступен (иначе тишина).
+# Если генератор недоступен — играет запись того же жанра из пула music_pool (ниже).
 music_vocabulary:
   gain_db: -8
   fade_in: 3
@@ -190,12 +163,12 @@ music_vocabulary:
     electronic:  { label: "Клуб/электроника", text: "electronic dance groove feeling, repetitive hypnotic riff" }
     sport:       { label: "Спорт/соревнование", text: "sports anthem, energetic rousing riff" }
   moods:
-    tense:       { label: "напряжение", text: "tense, suspenseful", fallback: tension }
-    ominous:     { label: "угроза", text: "ominous, dark, threatening", fallback: tension }
-    mysterious:  { label: "загадка", text: "mysterious, curious, enigmatic", fallback: tension }
-    anxious:     { label: "тревога", text: "anxious, nervous, uneasy", fallback: tension }
+    tense:       { label: "напряжение", text: "tense, suspenseful" }
+    ominous:     { label: "угроза", text: "ominous, dark, threatening" }
+    mysterious:  { label: "загадка", text: "mysterious, curious, enigmatic" }
+    anxious:     { label: "тревога", text: "anxious, nervous, uneasy" }
     sad:         { label: "грусть", text: "sad, melancholic, sorrowful" }
-    tender:      { label: "нежность", text: "tender, loving, intimate", fallback: romantic }
+    tender:      { label: "нежность", text: "tender, loving, intimate" }
     happy:       { label: "радость", text: "happy, cheerful, bright" }
     playful:     { label: "озорство", text: "playful, mischievous, light-hearted" }
     absurd:      { label: "абсурд", text: "absurd, silly, clumsy, comedic" }
