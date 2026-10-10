@@ -196,6 +196,13 @@ class Controller:
         self.journal.write("operator", action="music", state=state_id, result=result)
         return result
 
+    def manual_pool(self, genre: str) -> str:
+        """Кнопка жанра: следующая записанная мелодия жанра. AI не перебивает её до новой сцены."""
+        self._drop_suggestions(kind="music")
+        result = self.music.play_pool(genre, owner="manual")
+        self.journal.write("operator", action="pool", genre=genre, result=result)
+        return result
+
     def confirm(self, suggestion_id: int) -> Decision:
         s = self.state.suggestions.pop(suggestion_id, None)
         now = self.clock.now()

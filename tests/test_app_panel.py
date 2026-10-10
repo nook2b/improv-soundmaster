@@ -157,3 +157,31 @@ def test_run_flags_override_show_yaml():
     assert cfg.raw["listen"]["asr"] == "faster" and cfg.raw["listen"]["faster_model"] == "large-v3-turbo"
     assert cfg.raw["brain"]["provider"] == "openai"
     assert cfg.raw["video"] == {**cfg.raw["video"], "enabled": True, "camera": "Logitech BRIO"}
+
+
+def test_panel_genre_button_plays_pool(tmp_path):
+    import numpy as np
+    import soundfile
+
+    app = make_app(tmp_path)
+    for t in app.registry.pool["noir"]:
+        p = app.registry.sounds_dir / t.file
+        p.parent.mkdir(parents=True, exist_ok=True)
+        soundfile.write(str(p), np.full((48000, 2), 0.05, np.float32), 48000, format="FLAC")
+    app.start()
+    try:
+        lib = app.describe_library()
+        noir = next(g for g in lib["pool"] if g["genre"] == "noir")
+        assert noir["available"] == noir["total"] == 5
+        assert next(g for g in lib["pool"] if g["genre"] == "folk")["available"] == 0
+        assert handle_command(app, {"cmd": "pool", "genre": "noir"})["result"] in ("pool", "pool_loading")
+        t0 = time.time()
+        while (app.status()["music"]["active"].get("music", {}).get("state") != "pool:noir/1"
+               and time.time() - t0 < 5):
+            app.controller.tick()
+            time.sleep(0.02)
+        cur = app.status()["music"]["active"]["music"]
+        assert cur["state"] == "pool:noir/1" and "1/5" in cur["label"]
+        assert handle_command(app, {"cmd": "pool", "genre": "folk"})["result"] == "no_pool"
+    finally:
+        app.stop()

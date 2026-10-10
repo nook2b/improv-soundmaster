@@ -24,6 +24,8 @@ def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
         c.manual_stop(msg["effect"])
     elif cmd == "music":
         return {"result": c.manual_music(msg.get("state"))}
+    elif cmd == "pool":
+        return {"result": c.manual_pool(str(msg["genre"]))}
     elif cmd == "confirm":
         d = c.confirm(int(msg["id"]))
         return {"result": d.result, "blocked_by": d.blocked_by}

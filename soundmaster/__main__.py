@@ -6,6 +6,7 @@
   python -m soundmaster check          — проверить конфигурацию и файлы
   python -m soundmaster make-test-sounds — создать тестовые звуки для всех файлов реестра
   python -m soundmaster import-sounds ПАПКА — взять звуки (mp3, mp4, wav …) по именам id из реестра
+  python -m soundmaster make-music-pool — записать мелодии для кнопок жанров и резерва без интернета (Lyria)
   python -m soundmaster replay ЗАПИСЬ.mp4 — прогнать запись через систему (теневой режим) + отчёт
   python -m soundmaster cameras        — список камер (имя для config: video.camera)
 """
@@ -54,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     im = sub.add_parser("import-sounds", help="импорт звуков из папки (имя файла = id эффекта/фона)")
     im.add_argument("folder", help="папка с файлами: doorbell.mp3, rain.mp4 …")
     im.add_argument("--force", action="store_true", help="перезаписать существующие (в т. ч. тестовые) файлы")
+    mp = sub.add_parser("make-music-pool",
+                        help="записать мелодии пула (кнопки жанров и резерв без интернета) через Lyria")
+    mp.add_argument("--only", help="только жанр (noir) или одна мелодия (noir/2)")
+    mp.add_argument("--seconds", type=float, default=60.0, help="длина петли, с (по умолчанию 60)")
+    mp.add_argument("--parallel", type=int, default=4, help="сколько записывать одновременно")
+    mp.add_argument("--force", action="store_true", help="перезаписать уже записанные")
     args = p.parse_args(argv)
 
     if args.cmd == "devices":
@@ -134,6 +141,19 @@ def main(argv: list[str] | None = None) -> int:
         if rep.missing:
             print("Ещё нет файлов для: " + ", ".join(rep.missing) + " (временно: make-test-sounds)")
         print(f"Импортировано: {len(rep.imported)}")
+        return 1 if rep.errors else 0
+
+    if args.cmd == "make-music-pool":
+        from .music.pool import make_pool
+
+        try:
+            rep = make_pool(registry, seconds=args.seconds, parallel=args.parallel, only=args.only,
+                            force=args.force)
+        except (KeyError, RuntimeError) as e:
+            print(f"Ошибка: {e}")
+            return 1
+        print(f"Записано: {len(rep.made)}, уже было: {len(rep.skipped)} (перезаписать: --force), "
+              f"ошибок: {len(rep.errors)}" + (" — запустите ещё раз, допишутся только недостающие" if rep.errors else ""))
         return 1 if rep.errors else 0
 
     if args.cmd == "check":

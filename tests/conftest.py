@@ -16,8 +16,11 @@ SR = 8000
 
 
 @pytest.fixture
-def registry():
-    return load_registry(ROOT / "config" / "registry.yaml")
+def registry(tmp_path):
+    # Своя пустая папка звуков: тесты не зависят от того, что лежит в sounds/ (пул, импорт).
+    reg = load_registry(ROOT / "config" / "registry.yaml")
+    reg.sounds_dir = tmp_path / "sounds"
+    return reg
 
 
 @pytest.fixture

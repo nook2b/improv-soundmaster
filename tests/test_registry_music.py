@@ -232,3 +232,119 @@ def test_generator_gap_is_bridged_not_fallen_back(system, clock):
     assert c.music.active["music"].source == "generator"
     assert any(r.get("action") == "generator_bridge" for r in journal.records)
     assert not any(r.get("action") == "fallback" for r in journal.records)
+
+
+def test_pool_spec_is_solo_and_varied(registry):
+    assert len(registry.pool) == len(registry.vocabulary.genres)
+    for genre, tracks in registry.pool.items():
+        assert len(tracks) == 5
+        assert all(t.style.instrument != "auto" and t.style.genre == genre for t in tracks)
+        assert len({t.style.instrument for t in tracks}) >= 4, genre  # в жанре — разные инструменты
+
+
+def test_make_loop_is_seamless_and_pool_is_written(registry, tmp_path):
+    import shutil
+    from dataclasses import replace
+
+    from soundmaster.music import pool as mp
+
+    sr = mp.SR
+    t = np.arange(int(10 * sr)) / sr
+    x = np.stack([np.sin(2 * np.pi * 220 * t)] * 2, axis=1).astype(np.float32) * 0.3
+    loop = mp.make_loop(x, 5.0, sr, xfade=1.0)
+    assert len(loop) == 5 * sr
+    assert abs(float(loop[0, 0]) - float(x[5 * sr, 0])) < 0.05  # начало петли продолжает её конец
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    reg = replace(registry, sounds_dir=tmp_path)
+    calls = []
+
+    async def fake(preset, seconds, key):
+        calls.append(preset)
+        return np.tile(x, (int(seconds // 10) + 2, 1))
+
+    rep = mp.make_pool(reg, seconds=3, parallel=2, only="folk", progress=lambda s: None, recorder=fake)
+    assert len(rep.made) == 5 and not rep.errors
+    assert (tmp_path / "pool/folk/4-balalaika.flac").exists()
+    assert any("balalaika" in p["text"] for p in calls[0]["prompts"] + [p for c in calls for p in c["prompts"]])
+    again = mp.make_pool(reg, seconds=3, only="folk/4", progress=lambda s: None, recorder=fake)
+    assert again.skipped == ["pool/folk/4-balalaika.flac"] and not again.made
+
+
+def _fake_pool(registry, genre, sr=SR):
+    import soundfile
+
+    for t in registry.pool[genre]:
+        path = registry.sounds_dir / t.file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        soundfile.write(str(path), np.full((sr, 2), 0.05 * t.n, np.float32), sr, format="FLAC")
+
+
+def _wait(music, pred, timeout=5.0):
+    t0 = time.time()
+    while not pred():
+        music.tick()
+        assert time.time() - t0 < timeout, "мелодия пула не загрузилась"
+        time.sleep(0.01)
+
+
+def test_pool_button_plays_next_track_with_crossfade(system, registry):
+    make, engine, mixer, journal = system
+    c = make()
+    _fake_pool(registry, "folk")
+    assert c.manual_pool("folk") == "pool_loading"
+    _wait(c.music, lambda: "music" in c.music.active)
+    cur = c.music.active["music"]
+    assert cur.state.id == "pool:folk/1" and cur.source == "file" and cur.owner == "manual"
+    assert "балалайка" not in cur.state.label and "1/5" in cur.state.label
+    first_voice = cur.voice_id
+    for _ in range(SR // 256):
+        mixer.render(256)  # первая успела зазвучать
+    c.manual_pool("folk")  # повторно — следующая
+    _wait(c.music, lambda: c.music.active["music"].state.id == "pool:folk/2")
+    mixer.render(64)
+    old = next(v for v in mixer.voices if v.id == first_voice)
+    assert old.stopping and old.env_step < 1.0 / 64  # уходит плавно, а не обрывается
+    for _ in range(4):
+        c.manual_pool("folk")
+        c.music.tick()
+    _wait(c.music, lambda: c.music.active["music"].state.id == "pool:folk/1")  # по кругу
+
+
+def test_pool_is_reserve_when_generator_is_down(system, registry, clock):
+    from soundmaster.registry import MusicStyle
+
+    make, engine, mixer, journal = system
+    c = make()
+    c.music_mode = "AUTO"
+    _fake_pool(registry, "folk")
+    c.music.generator = BrokenGenerator(SR)
+    c.music.set_generator_enabled(True)
+    c.music.generator.error = "нет интернета"
+    style = MusicStyle("folk", "happy", "medium", "medium", "balalaika")
+    d = c.ai_music_style(style, scene_id=c.state.scene_id, connection_id=c.state.connection_id,
+                         t_input_ref=clock.now())
+    assert d.result == "started"
+    _wait(c.music, lambda: c.music.channel_source("music") == "file")
+    cur = c.music.active["music"]
+    assert cur.state.id == f"style:{style.id}"  # для модели это её выбор — не «перевыбирает»
+    assert cur.state.file == "pool/folk/4-balalaika.flac"  # тот же инструмент из пула
+    assert any(r.get("action") == "pool_fallback" for r in journal.records)
+
+
+def test_manual_pool_holds_until_scene_cut_then_automation_takes_over(system, registry, clock):
+    from soundmaster.registry import MusicStyle
+
+    make, engine, mixer, journal = system
+    c = make()
+    c.music_mode, c.scene_cut_mode, c.scene_cut_music = "AUTO", "AUTO", "neutral"
+    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow", "piano")
+    _fake_pool(registry, "noir")
+    c.manual_pool("noir")
+    _wait(c.music, lambda: "music" in c.music.active)
+    d = c.ai_music_style(MusicStyle("comedy", "playful", "low", "medium", "ukulele"), scene_id=c.state.scene_id,
+                         connection_id=c.state.connection_id, t_input_ref=clock.now())
+    assert (d.result, d.blocked_by) == ("blocked", "manual_music")
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.scene_cut("video")
+    assert c.music.active["music"].owner == "system"  # новая сцена — снова автоматика

@@ -321,6 +321,11 @@ class App:
                  "has_file": bool(m.file and m.file in self.engine.sounds), "has_generator": bool(m.generator)}
                 for m in self.registry.music_states.values()
             ],
+            "pool": [
+                {"genre": g, "label": self.registry.vocabulary.genres[g].label if self.registry.vocabulary else g,
+                 "total": len(tracks), "available": len(self.music.pool_tracks(g))}
+                for g, tracks in self.registry.pool.items()
+            ],
             "missing": self.load_report.missing if self.load_report else [],
             "errors": self.load_report.errors if self.load_report else [],
         }

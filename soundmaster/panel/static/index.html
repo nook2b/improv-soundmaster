@@ -75,6 +75,13 @@
   </section>
 
   <section>
+    <h2>Музыка вручную — жанры</h2>
+    <div class="help" style="margin-bottom:8px">Нажатие — мелодия жанра (один инструмент), повторное — следующая, переход плавный.
+      Музыка держится до новой сцены, потом снова решает автоматика.</div>
+    <div class="grid" id="pool"></div>
+  </section>
+
+  <section>
     <h2>Музыка и атмосфера</h2>
     <div class="help" id="nowMusic" style="margin-bottom:8px">Музыка не играет</div>
     <div class="grid" id="music"></div>
@@ -159,6 +166,15 @@ async function loadLibrary() {
     mus.appendChild(b);
     if (m.hotkey) keyMap[m.hotkey.toLowerCase()] = b;
   }
+  const pool = $("pool"); pool.innerHTML = "";
+  for (const g of lib.pool || []) {
+    const sub = g.available ? `${g.available} мелод.` : "нет записей: make-music-pool";
+    const b = button(g.label, sub, null, g.available ? "" : "missing");
+    b.dataset.pool = g.genre;
+    b.onclick = () => { flash(b); send({ cmd: "pool", genre: g.genre }); };
+    pool.appendChild(b);
+  }
+  if (!(lib.pool || []).length) pool.innerHTML = '<div class="help">Пул не настроен (music_pool в registry.yaml)</div>';
   if (lib.missing.length) log("Нет файлов: " + lib.missing.join(", "));
   if (lib.errors.length) log("Ошибки файлов: " + lib.errors.join("; "));
 }
@@ -177,8 +193,18 @@ function render(s) {
   document.querySelectorAll("[data-effect]").forEach(b => b.classList.toggle("playing", playing.has(b.dataset.effect)));
   const activeMusic = new Set(Object.values(s.music.active).map(a => a.state));
   const nowMusic = Object.entries(s.music.active).map(([ch, a]) => `${ch === "ambience" ? "атмосфера" : "музыка"}: ${a.label || a.state}` + (a.source === "none" ? " (нет источника — тишина)" : ` (${a.source === "generator" ? "генератор" : "файл"})`));
+  if (s.music.pool_loading) nowMusic.push("загружается запись…");
   $("nowMusic").textContent = nowMusic.length ? nowMusic.join(" · ") : "Музыка не играет";
   document.querySelectorAll("[data-music]").forEach(b => b.classList.toggle("playing", activeMusic.has(b.dataset.music)));
+  const cur = s.music.active.music;
+  const poolGenre = cur && cur.state.startsWith("pool:") ? cur.state.slice(5).split("/")[0] : (s.music.pool_loading || "").startsWith("pool:") ? s.music.pool_loading.slice(5).split("/")[0] : null;
+  document.querySelectorAll("[data-pool]").forEach(b => {
+    const on = b.dataset.pool === poolGenre;
+    b.classList.toggle("playing", on);
+    const g = (lib.pool || []).find(x => x.genre === b.dataset.pool);
+    const sub = b.querySelector(".sub");
+    if (sub && g) sub.textContent = on && cur && cur.state.startsWith("pool:") ? (cur.label.startsWith(g.label) ? cur.label.slice(g.label.length).trim() : cur.label) : (g.available ? `${g.available} мелод.` : "нет записей: make-music-pool");
+  });
   const g = s.music;
   $("gen").textContent = g.generator ? `Генератор ${g.generator}: ${g.generator_enabled ? "вкл" : "выкл"}` + (g.generator_error ? ` (${g.generator_error})` : "") : "Генератор не настроен";
   $("gen").disabled = !g.generator;
