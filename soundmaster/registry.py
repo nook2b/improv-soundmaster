@@ -123,13 +123,18 @@ class MusicVocabulary:
     fade_in: float = 3.0
     fade_out: float = 3.0
     gain_db: float = -8.0
+    # Непусто — музыка только сольная: инструмент обязателен (auto нельзя), а этот текст
+    # добавляется к запросу генератора, чтобы Lyria не дописывала аккомпанемент.
+    solo: str = ""
 
     def validate(self, style: MusicStyle) -> str | None:
         for name, value, table in (("genre", style.genre, self.genres), ("mood", style.mood, self.moods),
                                    ("energy", style.energy, self.energy), ("tempo", style.tempo, self.tempo)):
             if value not in table:
                 return f"unknown_{name}"
-        if style.instrument != "auto" and style.instrument not in self.instruments:
+        if style.instrument == "auto":
+            return "instrument_required" if self.solo else None
+        if style.instrument not in self.instruments:
             return "unknown_instrument"
         return None
 
@@ -149,10 +154,21 @@ class MusicVocabulary:
             # иначе Lyria добавляет инструменты из описания жанра).
             parts = [(g, 0.5), (self.instruments[style.instrument], 1.5), (m, 1.0), (e, 0.5), (t, 0.5)]
         prompts = [{"text": x.text, "weight": w} for x, w in parts if x.text]
+        if self.solo and style.instrument != "auto":
+            prompts.append({"text": self.solo, "weight": 1.0})
         config: dict[str, Any] = {}
         for x, _ in parts:
             config.update(x.config)
         return {"prompts": prompts, "config": config}
+
+
+@dataclass
+class PoolTrack:
+    """Записанная мелодия пула: стиль словаря + файл (sounds/pool/<жанр>/<n>-<инструмент>.flac)."""
+
+    style: MusicStyle
+    file: str
+    n: int  # номер в жанре, с 1
 
 
 @dataclass
@@ -177,6 +193,7 @@ class Registry:
     sounds_dir: Path
     scene_end_effect: str | None = None  # какой эффект звучит при подтверждении подсказки отбивки
     vocabulary: MusicVocabulary | None = None  # словарь музыки для генератора; None — только состояния-файлы
+    pool: dict[str, list[PoolTrack]] = field(default_factory=dict)  # жанр → записанные мелодии
 
     def music_style_state(self, style: MusicStyle) -> MusicState:
         """Музыкальное состояние для стиля из словаря: пресет генератора + резервный файл настроения."""
@@ -318,8 +335,28 @@ def load_registry(path: str | Path) -> Registry:
              f"scene_end_effect {scene_end_effect!r} нет в effects")
 
     vocabulary = _parse_vocabulary(data.get("music_vocabulary"), states)
+    pool = _parse_pool(data.get("music_pool"), vocabulary)
     return Registry(effects=effects, music_states=states, limits=limits, sounds_dir=sounds_dir,
-                    scene_end_effect=scene_end_effect, vocabulary=vocabulary)
+                    scene_end_effect=scene_end_effect, vocabulary=vocabulary, pool=pool)
+
+
+def _parse_pool(raw: dict[str, Any] | None, vocab: MusicVocabulary | None) -> dict[str, list[PoolTrack]]:
+    if not raw:
+        return {}
+    _require(vocab is not None, "music_pool: нужен music_vocabulary")
+    assert vocab is not None
+    pool: dict[str, list[PoolTrack]] = {}
+    for genre, items in raw.items():
+        _require(genre in vocab.genres, f"music_pool.{genre}: нет такого жанра в словаре")
+        _require(isinstance(items, list) and items, f"music_pool.{genre}: нужен список мелодий")
+        tracks = []
+        for n, spec in enumerate(items, 1):
+            style = MusicStyle.parse(f"{genre}/{spec}")
+            bad = vocab.validate(style)
+            _require(bad is None, f"music_pool.{genre}[{n}] {spec!r}: {bad}")
+            tracks.append(PoolTrack(style, f"pool/{genre}/{n}-{style.instrument}.flac", n))
+        pool[genre] = tracks
+    return pool
 
 
 def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState]) -> MusicVocabulary | None:
@@ -344,4 +381,5 @@ def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState])
             table[iid] = VocabItem(iid, it.get("label", iid), it.get("text", ""), dict(it.get("config") or {}), fb)
         tables[key] = table
     return MusicVocabulary(**tables, fade_in=float(raw.get("fade_in", 3.0)),
-                           fade_out=float(raw.get("fade_out", 3.0)), gain_db=float(raw.get("gain_db", -8.0)))
+                           fade_out=float(raw.get("fade_out", 3.0)), gain_db=float(raw.get("gain_db", -8.0)),
+                           solo=str(raw.get("solo") or ""))

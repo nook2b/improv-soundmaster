@@ -150,8 +150,16 @@ class BrainScheduler:
             lines.append(f"Состав в этой сцене закреплён: instrument {kept} — до следующей сцены не меняется.")
         prev = c.prev_scene_music()
         if prev:
-            lines.append(f"ЗАПРЕЩЕНО в этой сцене: genre {prev.genre} с instrument {prev.instrument} "
-                         "(так звучала прошлая сцена) — возьми другой жанр или другой состав.")
+            if prev.instrument == "auto":
+                lines.append(f"ЗАПРЕЩЕНО в этой сцене: genre {prev.genre} с instrument auto "
+                             "(так звучала прошлая сцена) — возьми другой жанр или другой состав.")
+            else:
+                lines.append(f"ЗАПРЕЩЕНО в этой сцене: instrument {prev.instrument} "
+                             "(так звучала прошлая сцена) — возьми другой инструмент.")
+        used = [MusicStyle.parse(sid).instrument for scene, sid in c.music_history if scene != c.state.scene_id]
+        if used and c.registry.vocabulary is not None and c.registry.vocabulary.solo:
+            fresh = [i for i in c.registry.vocabulary.instruments if i not in used]
+            lines.append("Давно не звучали (предпочти их): " + ", ".join(fresh[:8]) + ".")
         if c.state.armed:
             lines.append(f"Взведено: {c.state.armed.effect}.")
         recent = [p for p in c.played if now - p.t < 60]

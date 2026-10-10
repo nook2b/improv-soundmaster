@@ -185,8 +185,8 @@ def test_ai_music_only_suggests(system, clock):
 # ---- автономная музыка ---------------------------------------------------------------------
 from soundmaster.registry import MusicStyle  # noqa: E402
 
-NOIR = MusicStyle("noir", "tense", "low", "slow")
-COMEDY = MusicStyle("comedy", "playful", "medium", "fast")
+NOIR = MusicStyle("noir", "tense", "low", "slow", "saxophone")
+COMEDY = MusicStyle("comedy", "playful", "medium", "fast", "ukulele")
 
 
 def style(c, s, clock, **kw):
@@ -205,7 +205,7 @@ def test_music_style_auto_starts_without_human_even_without_clean_feed(system, c
     c = auto(system)
     d = style(c, NOIR, clock)
     assert d.result == "started"
-    assert c.music.current("music").id == "style:noir/tense/low/slow"
+    assert c.music.current("music").id == "style:noir/tense/low/slow/saxophone"
     assert c.music.active["music"].owner == "ai"
     assert style(c, NOIR, clock).result == "deduped"
 
@@ -218,7 +218,7 @@ def test_music_style_min_hold_then_change(system, clock):
     assert (d.result, d.blocked_by) == ("blocked", "min_hold")
     clock.advance(c.music_min_hold)
     assert style(c, COMEDY, clock).result == "started"
-    assert c.music.current("music").id.endswith("comedy/playful/medium/fast")
+    assert c.music.current("music").id.endswith("comedy/playful/medium/fast/ukulele")
 
 
 def test_new_scene_stops_music_and_allows_immediate_choice(system, clock):
@@ -234,7 +234,7 @@ def neutral_auto(system):
     c = auto(system)
     c.scene_cut_music = "neutral"
     c.scene_cut_mode = "AUTO"
-    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow")
+    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow", "piano")
     return c
 
 
@@ -245,7 +245,7 @@ def test_scene_cut_goes_to_neutral_then_model_choice_replaces_it_at_once(system,
     clock.advance(c.scene_cut_cooldown + 1)
     assert c.scene_cut("video").result == "started"
     cur = c.music.current("music")
-    assert cur.id == "style:underscore/calm/low/slow" and c.music.active["music"].owner == "system"
+    assert cur.id == "style:underscore/calm/low/slow/piano" and c.music.active["music"].owner == "system"
     assert c.music.current("ambience") is None  # атмосфера прошлого места гаснет
     clock.advance(1)
     assert style(c, COMEDY, clock).result == "started"  # нейтральную не держим
@@ -257,18 +257,18 @@ def test_first_pick_in_scene_can_be_corrected_sooner(system, clock):
     clock.advance(c.music_first_hold + 0.5)
     assert style(c, COMEDY, clock).result == "started"  # первый выбор — держится только 10 с
     clock.advance(c.music_first_hold + 0.5)
-    d = style(c, MusicStyle("drama", "sad", "low", "slow"), clock)
+    d = style(c, MusicStyle("drama", "sad", "low", "slow", "cello"), clock)
     assert (d.result, d.blocked_by) == ("blocked", "min_hold")  # дальше — 30 с
     assert [sid for _, sid in c.music_history] == [NOIR.id, COMEDY.id]
 
 
-def test_neighbouring_scenes_do_not_repeat_genre_and_ensemble(system, clock):
+def test_neighbouring_scenes_do_not_repeat_instrument(system, clock):
     c = neutral_auto(system)
-    drama = MusicStyle("drama", "tense", "low", "slow")
+    drama = MusicStyle("drama", "tense", "low", "slow", "cello")
     assert style(c, drama, clock).result == "started"
     clock.advance(c.scene_cut_cooldown + 1)
     c.scene_cut("video")
-    d = style(c, MusicStyle("drama", "sad", "medium", "medium"), clock)  # другое настроение — тот же звук
+    d = style(c, MusicStyle("comedy", "playful", "medium", "medium", "cello"), clock)  # другой жанр, тот же инструмент
     assert (d.result, d.blocked_by) == ("blocked", "same_as_prev_scene")
     assert style(c, MusicStyle("drama", "sad", "low", "slow", "piano"), clock).result == "started"
     clock.advance(c.scene_cut_cooldown + 1)
@@ -276,17 +276,23 @@ def test_neighbouring_scenes_do_not_repeat_genre_and_ensemble(system, clock):
     assert style(c, drama, clock).result == "started"  # через сцену — можно
 
 
+def test_solo_vocabulary_requires_an_instrument(system, clock):
+    c = auto(system)
+    d = style(c, MusicStyle("drama", "tense", "low", "slow"), clock)
+    assert (d.result, d.blocked_by) == ("blocked", "instrument_required")
+
+
 def test_scene_instrument_locked_after_first_correction(system, clock):
     c = neutral_auto(system)
-    assert style(c, MusicStyle("drama", "tense", "low", "slow"), clock).result == "started"
+    assert style(c, MusicStyle("drama", "tense", "low", "slow", "cello"), clock).result == "started"
     clock.advance(c.music_first_hold + 1)
-    d = style(c, MusicStyle("drama", "tense", "low", "slow", "strings"), clock)  # первое уточнение — можно
+    d = style(c, MusicStyle("drama", "tense", "low", "slow", "violin"), clock)  # первое уточнение — можно
     assert d.result == "started"
     clock.advance(c.music_min_hold + 1)
-    d = style(c, MusicStyle("drama", "tense", "low", "slow", "auto"), clock)  # только состав — уже не меняем
+    d = style(c, MusicStyle("drama", "tense", "low", "slow", "piano"), clock)  # только инструмент — уже не меняем
     assert d.result == "deduped"
-    d = style(c, MusicStyle("drama", "sad", "low", "slow", "piano"), clock)  # поворот: настроение да, состав нет
-    assert d.result == "started" and c.music.current("music").id == "style:drama/sad/low/slow/strings"
+    d = style(c, MusicStyle("drama", "sad", "low", "slow", "piano"), clock)  # поворот: настроение да, инструмент нет
+    assert d.result == "started" and c.music.current("music").id == "style:drama/sad/low/slow/violin"
     clock.advance(c.scene_cut_cooldown + 1)
     c.scene_cut("video")
     assert style(c, MusicStyle("folk", "tender", "low", "slow", "guitar"), clock).result == "started"  # новая сцена
@@ -297,10 +303,11 @@ def test_music_style_with_solo_instrument(system, clock):
     s = MusicStyle("folk", "tender", "low", "slow", "guitar")
     assert style(c, s, clock).result == "started"
     st = c.music.current("music")
-    assert st.id == "style:folk/tender/low/slow/guitar" and "только гитара" in st.label
+    assert st.id == "style:folk/tender/low/slow/guitar" and "гитара" in st.label
     texts = {p["text"]: p["weight"] for p in st.generator["prompts"]}
-    assert any("guitar only" in t for t in texts) and max(texts.values()) == texts[
-        next(t for t in texts if "guitar only" in t)]
+    guitar = next(t for t in texts if "guitar" in t)
+    assert max(texts.values()) == texts[guitar]  # инструмент весит больше жанра
+    assert any("no accompaniment" in t for t in texts)  # сольно: Lyria не дописывает аккомпанемент
     assert style(c, MusicStyle("folk", "tender", "low", "slow", "kazoo"), clock).blocked_by == "unknown_instrument"
 
 
@@ -317,7 +324,7 @@ def test_music_style_suggest_mode_and_confirm(system, clock):
     assert (d.result, d.blocked_by) == ("suggested", "background_suggest_only")
     assert c.music.current("music") is None
     assert c.confirm(d.suggestion_id).result == "confirmed"
-    assert c.music.current("music").id == "style:noir/tense/low/slow"
+    assert c.music.current("music").id == "style:noir/tense/low/slow/saxophone"
 
 
 def test_music_style_stop_ai_turns_auto_into_suggestion(system, clock):
@@ -331,7 +338,7 @@ def test_music_style_stop_ai_turns_auto_into_suggestion(system, clock):
 
 def test_music_style_rejects_unknown_words_and_late(system, clock):
     c = auto(system)
-    assert style(c, MusicStyle("polka", "tense", "low", "slow"), clock).blocked_by == "unknown_genre"
+    assert style(c, MusicStyle("polka", "tense", "low", "slow", "piano"), clock).blocked_by == "unknown_genre"
     clock.advance(10)
     assert style(c, NOIR, clock, t_input_ref=clock.now() - 10).result == "late_dropped"
 
@@ -355,7 +362,7 @@ def test_model_does_not_see_manual_only_ambience(registry):
 def test_show_starts_with_neutral_music(system, clock):
     c = neutral_auto(system)
     assert c.start_neutral_music()
-    assert c.music.current("music").id == "style:underscore/calm/low/slow"
+    assert c.music.current("music").id == "style:underscore/calm/low/slow/piano"
     assert c.music.active["music"].owner == "system"
     assert style(c, COMEDY, clock).result == "started"  # модель сразу заменяет нейтральную
 

@@ -160,10 +160,11 @@ def test_cli_replay_by_url(scene_video, tmp_path, monkeypatch):
 def test_replay_music_auto_and_scene_cut_changes_music(scene_video, tmp_path):
     """Музыка от AI включается сама; «монтаж» в AUTO начинает новую сцену, музыка — в нейтральную."""
     music = {"type": "music", "id": None, "reason": "фотограф", "confidence": "high",
-             "genre": "comedy", "mood": "playful", "energy": "medium", "tempo": "medium"}
+             "genre": "comedy", "mood": "playful", "energy": "medium", "tempo": "medium",
+             "instrument": "ukulele"}
     summary, j, rp = run(scene_video, tmp_path, rules=[("птичка", music)], scene_cut_mode="AUTO")
     dec = [(r["call"], r["effect"], r["result"]) for r in j if r["kind"] == "decision"]
-    assert ("music_style", "comedy/playful/medium/medium", "started") in dec
+    assert ("music_style", "comedy/playful/medium/medium/ukulele", "started") in dec
     assert ("scene_cut", "new_scene", "started") in dec
     t_music = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "music_style")
     t_cut = next(r["t"] for r in j if r["kind"] == "decision" and r["call"] == "scene_cut")

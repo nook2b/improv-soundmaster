@@ -60,14 +60,20 @@ MUSIC_RULES = """\
   первый признак сцены (место, жанр, тон — часто уже по 1–2 репликам). Первый выбор можно
   уточнить через 10 с; дальше меняй только при явном повороте настроения, не от каждой реплики.
   Под тихий диалог — energy low.
-  instrument: обычно auto (как принято в жанре). Для разнообразия примерно в каждой 3–4-й сцене
-  выбирай один инструмент или маленький состав — особенно для тихих, личных, простых сцен
-  (например, только гитара у костра, только фортепиано в грустной сцене). Разнообразие — между
-  сценами, а не внутри: состав выбирается в начале сцены (можно поправить первым уточнением) и
-  дальше до «монтажа» не меняется. При повороте внутри сцены меняй mood/energy/tempo, а не
-  инструменты и не «для разнообразия». Не повторяй жанр и состав прошлых сцен без причины. Соседние сцены не должны звучать одинаково: тот же жанр с тем
-  же составом, что в прошлой сцене, программа не включит (см. «ЗАПРЕЩЕНО» в состоянии).
+  {instrument_rules}
+  Разнообразие — между сценами, а не внутри: инструмент выбирается в начале сцены (можно поправить
+  первым уточнением) и дальше до «монтажа» не меняется. При повороте внутри сцены меняй
+  mood/energy/tempo, а не инструмент. Соседние сцены не должны звучать одинаково: что в
+  состоянии помечено «ЗАПРЕЩЕНО», программа не включит.
 """
+
+SOLO_INSTRUMENT = """instrument: музыка всегда сольная — ровно один инструмент, выбирай его всегда. Подбирай
+  инструмент к месту и характеру сцены (балалайка или аккордеон в деревне, саксофон в баре,
+  скрипка в драме, банджо или гармошка в вестерне, шкатулка в сказке) и меняй от сцены к сцене:
+  предпочитай инструменты, которые давно не звучали (список в состоянии)."""
+
+AUTO_INSTRUMENT = """instrument: обычно auto (как принято в жанре). Для разнообразия примерно в каждой 3–4-й сцене
+  выбирай один инструмент или маленький состав — особенно для тихих, личных, простых сцен."""
 
 AMBIENCE_RULES = """\
 - background — только атмосфера МЕСТА со своим звуком (список ФОН), и только если это место
@@ -97,7 +103,7 @@ def library_text(registry: Registry) -> str:
         for name, table in (("genre", v.genres), ("mood", v.moods), ("energy", v.energy), ("tempo", v.tempo)):
             lines.append(f"{name}: " + "; ".join(f"{i.id} — {i.label}" for i in table.values()))
         if v.instruments:
-            lines.append("instrument: auto — как принято в жанре; "
+            lines.append("instrument: " + ("" if v.solo else "auto — как принято в жанре; ")
                          + "; ".join(f"{i.id} — {i.label}" for i in v.instruments.values()))
     return "\n".join(lines)
 
@@ -119,7 +125,7 @@ def style_enums(registry: Registry) -> dict[str, list[str]]:
         return {}
     out = {"genre": list(v.genres), "mood": list(v.moods), "energy": list(v.energy), "tempo": list(v.tempo)}
     if v.instruments:
-        out["instrument"] = ["auto"] + list(v.instruments)
+        out["instrument"] = ([] if v.solo else ["auto"]) + list(v.instruments)
     return out
 
 
@@ -190,5 +196,7 @@ def system_text(registry: Registry) -> str:
     if registry.vocabulary is None:
         rules = BACKGROUND_RULES
     else:
-        rules = MUSIC_RULES + (AMBIENCE_RULES if background_states(registry) else "")
+        solo = bool(registry.vocabulary.solo)
+        rules = MUSIC_RULES.replace("{instrument_rules}", SOLO_INSTRUMENT if solo else AUTO_INSTRUMENT)
+        rules += AMBIENCE_RULES if background_states(registry) else ""
     return SYSTEM_PROMPT.replace("{background_rules}", rules) + "\n" + library_text(registry)

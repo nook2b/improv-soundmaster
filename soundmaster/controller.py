@@ -585,7 +585,8 @@ class Controller:
         if why:
             return log(Decision("blocked", style.id, why))
         prev = self.prev_scene_music()
-        if prev and (prev.genre, prev.instrument) == (style.genre, style.instrument):
+        if prev and prev.instrument == style.instrument and (style.instrument != "auto" or prev.genre == style.genre):
+            # Соседние сцены звучат по-разному: сольный инструмент (или жанр при auto) не повторяется.
             return log(Decision("blocked", style.id, "same_as_prev_scene"))
         if self.music_mode != "AUTO" or not self.state.automation_enabled:
             # Подсказка хранит стиль как строку — при подтверждении он собирается заново.
@@ -607,7 +608,7 @@ class Controller:
         return MusicStyle.parse(cur[-1]).instrument if cur else None
 
     def prev_scene_music(self) -> MusicStyle | None:
-        """Чем закончилась музыка прошлой сцены: соседние сцены не звучат одинаково (жанр + состав)."""
+        """Чем закончилась музыка прошлой сцены: соседние сцены не звучат одинаково."""
         past = [sid for scene, sid in self.music_history if scene < self.state.scene_id]
         return MusicStyle.parse(past[-1]) if past else None
 

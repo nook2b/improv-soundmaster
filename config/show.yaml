@@ -29,7 +29,7 @@ autonomy:
   music: AUTO                # AUTO — музыка и атмосфера включаются сами | SUGGEST — подсказка на пульте
   music_min_hold: 30         # с: столько держать выбранную музыку в сцене, прежде чем AI её сменит
   music_first_hold: 10       # с: первый выбор в сцене (по 1–2 репликам) можно поправить быстрее
-  music_neutral: underscore/calm/low/slow   # нейтральная музыка в начале шоу и сразу после «монтажа»
+  music_neutral: underscore/calm/low/slow/piano   # нейтральная музыка в начале шоу и сразу после «монтажа»
 
 panel:
   host: 127.0.0.1

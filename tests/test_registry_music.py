@@ -91,7 +91,7 @@ def test_test_tone_generator_streams_and_updates(system):
 def test_vocabulary_builds_generator_preset(registry):
     from soundmaster.registry import MusicStyle
 
-    st = registry.music_style_state(MusicStyle("noir", "tense", "low", "slow"))
+    st = registry.music_style_state(MusicStyle("noir", "tense", "low", "slow", "saxophone"))
     assert st.channel == "music" and st.file == registry.music_states["tension"].file
     assert [p["text"] for p in st.generator["prompts"]][0].startswith("film noir")
     assert "bpm" not in st.generator["config"] and st.generator["config"]["density"] == 0.2
@@ -113,7 +113,7 @@ def test_style_without_any_source_is_still_tracked(system):
 
     make, engine, mixer, journal = system
     c = make()
-    s = MusicStyle("comedy", "happy", "medium", "fast")  # у «радости» нет резервного файла
+    s = MusicStyle("comedy", "happy", "medium", "fast", "ukulele")  # у «радости» нет резервного файла
     assert c.music.set_style(s) == "no_source"
     assert c.music.current("music").id == f"style:{s.id}"
     assert c.music.set_style(s) == "already_playing"
@@ -182,7 +182,7 @@ def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock
     make, engine, mixer, journal = system
     c = make()
     c.music_mode, c.scene_cut_mode, c.scene_cut_music = "AUTO", "AUTO", "neutral"
-    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow")
+    c.music_neutral = MusicStyle("underscore", "calm", "low", "slow", "piano")
     gen = RecordingGenerator(SR)
     c.music.generator, c.music.use_generator = gen, True
     assert c.start_neutral_music()
@@ -191,7 +191,7 @@ def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock
     vid = c.music.active["music"].voice_id
     mixer.render(256)
     voice = next(v for v in mixer.voices if v.id == vid)
-    c.ai_music_style(MusicStyle("drama", "tense", "low", "slow"), scene_id=c.state.scene_id,
+    c.ai_music_style(MusicStyle("drama", "tense", "low", "slow", "cello"), scene_id=c.state.scene_id,
                      connection_id=c.state.connection_id, t_input_ref=clock.now())
     assert gen.updates == [False]  # внутри сцены — плавный переход
 
@@ -202,7 +202,7 @@ def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock
     assert voice.env_target < 0.2 and not voice.stopping  # провал, но не тишина
 
     clock.advance(1)
-    d = c.ai_music_style(MusicStyle("comedy", "playful", "low", "medium"), scene_id=c.state.scene_id,
+    d = c.ai_music_style(MusicStyle("comedy", "playful", "low", "medium", "ukulele"), scene_id=c.state.scene_id,
                          connection_id=c.state.connection_id, t_input_ref=clock.now())
     assert d.result == "started" and gen.updates == [False, True, True]  # выбор в провале — тоже сразу
 
@@ -211,7 +211,7 @@ def test_scene_cut_with_generator_dips_switches_at_once_then_rises(system, clock
     mixer.render(256)
     assert voice.env_target == 1.0  # новая музыка поднимается
     clock.advance(c.music_first_hold + 1)
-    d = c.ai_music_style(MusicStyle("romance", "sad", "low", "slow"), scene_id=c.state.scene_id,
+    d = c.ai_music_style(MusicStyle("romance", "sad", "low", "slow", "harp"), scene_id=c.state.scene_id,
                          connection_id=c.state.connection_id, t_input_ref=clock.now())
     assert d.result == "started" and gen.updates[-1] is False  # внутри сцены — снова плавно
 
@@ -224,7 +224,7 @@ def test_generator_gap_is_bridged_not_fallen_back(system, clock):
     c.music_mode = "AUTO"
     gen = RecordingGenerator(SR)
     c.music.generator, c.music.use_generator = gen, True
-    c.music.set_style(MusicStyle("drama", "tense", "low", "slow"), owner="ai")
+    c.music.set_style(MusicStyle("drama", "tense", "low", "slow", "cello"), owner="ai")
     c.music.tick()
     for _ in range(3 * SR // 256):  # 2 с звука кончились — генератор «переподключается»
         mixer.render(256)
