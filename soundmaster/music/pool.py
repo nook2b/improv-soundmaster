@@ -73,21 +73,6 @@ def busyness(x: np.ndarray, sr: int = SR) -> float:
     return hits / (len(m) / sr)
 
 
-def time_stretch(x: np.ndarray, k: float, sr: int = SR) -> np.ndarray:
-    """Замедлить петлю в 1/k раз без смены тона, сохранив бесшовность (растягиваем три копии подряд)."""
-    if k >= 0.999:
-        return x
-    n = int(len(x) / k)
-    src = np.ascontiguousarray(np.concatenate([x, x, x]), dtype="<f4").tobytes()
-    for flt in (f"rubberband=tempo={k}", f"atempo={k}"):  # rubberband чище; atempo — если его нет
-        r = subprocess.run(["ffmpeg", "-v", "error", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-",
-                            "-af", flt, "-f", "f32le", "-"], input=src, capture_output=True)
-        if r.returncode == 0 and r.stdout:
-            y = np.frombuffer(r.stdout, "<f4").reshape(-1, 2)
-            return y[n:2 * n].copy() if len(y) >= 2 * n else y[:n].copy()
-    raise RuntimeError("ffmpeg не смог замедлить звук")
-
-
 def write_flac(path: Path, x: np.ndarray, sr: int = SR) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp.flac")
@@ -195,11 +180,11 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
                 report.errors.append((t.file, err))
                 progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА: {name} — {err}")
                 return
-            write_flac(path, normalize(time_stretch(best[1], t.stretch)))
+            write_flac(path, normalize(best[1]))
             # Как получена мелодия (промпт, сид, модель) — чтобы удачную можно было повторить.
             path.with_suffix(".json").write_text(json.dumps(
                 {"model": "lyria-realtime-exp", "preset": best[2], "busyness": round(best[0], 2),
-                 "stretch": t.stretch, "made": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False, indent=1),
+                 "made": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False, indent=1),
                 encoding="utf-8")
             report.made.append(t.file)
             progress(f"[{len(report.made) + len(report.errors)}/{total}] готово: {name}, {best[0]:.1f} нот/с")

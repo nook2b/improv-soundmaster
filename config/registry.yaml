@@ -168,7 +168,10 @@ music_vocabulary:
     lounge:      { label: "Бар/лаунж", text: "lounge jazz, smooth relaxed bar music" }
     period:      { label: "Старина/классика", text: "baroque classical period style, ornamented melody" }
     folk:        { label: "Деревня/фолк", text: "folk tune, rustic village dance feeling" }
-    electronic:  { label: "Клуб/электроника", text: "electronic dance groove feeling, repetitive hypnotic riff" }
+    # Клуб без бита не звучит как клуб (оценка Ивана) — здесь, и только здесь, лёгкая бочка и свой темп.
+    electronic:  { label: "Клуб/электроника", text: "relaxed deep house club music, hypnotic repeating synth riff",
+                   solo: "exactly one monophonic synthesizer melody over only a soft muted four-on-the-floor kick drum; no snare, no hi-hats, no claps, no other percussion, no bass, no pads, no chords, no vocals",
+                   config: { mute_drums: false, bpm: 100 } }
     sport:       { label: "Спорт/соревнование", text: "sports anthem, energetic rousing riff" }
   moods:
     tense:       { label: "напряжение", text: "tense, suspenseful" }
@@ -231,8 +234,9 @@ music_vocabulary:
 # служат резервом, если генератор недоступен (нет интернета). Файлы — sounds/pool/<жанр>/<n>-<инструмент>.flac,
 # создаются командой `python -m soundmaster make-music-pool` (Lyria, нужен GEMINI_API_KEY). В git не кладутся.
 music_pool:
-  # «настроение/энергия/темп/инструмент [@замедление] [| уточнение к промпту]». Раунд 3 (2026-10-17):
-  # оставленные на прослушке — без изменений; «мелодия хорошая, но медленнее» — та же запись, замедлена (@0.8);
+  # «настроение/энергия/темп/инструмент [| уточнение к промпту]». Раунд 3 (2026-10-17):
+  # оставленные на прослушке — без изменений; «мелодия хорошая, но медленнее» — новая запись, медленнее
+  # (замедлять готовую запись нельзя — звучит криво, решение Ивана);
   # три мелодии «электроники» перенесены в нуар, триллер и фантастику (по оценке Ивана); остальной брак —
   # новая запись по формуле гайда, со стереотипным для жанра инструментом.
   underscore:
@@ -243,10 +247,10 @@ music_pool:
     - tender/low/medium/musicbox
   drama:
     - tense/low/slow/cello
-    - sad/low/slow/piano @0.8
+    - sad/low/slow/piano | the same sad piano idea, even slower, very long pauses
     - tense/low/slow/violin | restrained tension, one violin line only, no second violin, no accompaniment
     - nostalgic/low/slow/guitar
-    - sad/low/slow/clarinet @0.85
+    - sad/low/slow/clarinet | slightly slower, long breaths between phrases
   comedy:
     - playful/low/slow/ukulele | awkward comedy, tiny hesitations, short playful phrases
     - absurd/low/slow/clarinet | whimsical silent-film comedy, light staccato, mischievous but not frantic
@@ -296,7 +300,7 @@ music_pool:
     - playful/medium/medium/clarinet
     - mysterious/low/slow/celesta | gentle fairy-tale magic, no accents
   scifi:
-    - mysterious/low/slow/synth @0.8
+    - mysterious/low/slow/synth | very slow, long held notes, weightless
     - tense/medium/medium/synth
     - anxious/low/slow/theremin | 1950s science fiction
     - nostalgic/low/slow/synth | weightless space, mysterious signal
@@ -306,24 +310,24 @@ music_pool:
     - triumphant/low/slow/horn | heroic, noble, restrained
     - tense/low/slow/cello | grand but restrained, one cello only
     - triumphant/low/slow/violin | heroic, noble, one violin only
-    - nostalgic/medium/slow/flute @0.85
+    - nostalgic/low/slow/flute | slightly slower, long breaths between phrases
   cartoon:
     - playful/medium/fast/marimba
     - absurd/low/slow/clarinet | silly cartoon, light staccato, unhurried
     - playful/low/slow/ukulele | cartoon, gently plucked, tiny pauses
-    - absurd/medium/medium/harmonica @0.7
+    - absurd/low/slow/harmonica | funny wobbly cartoon tune, unhurried, long pauses
     - absurd/low/slow/bassoon | clumsy cartoon tiptoeing
   lounge:
-    - calm/low/medium/piano @0.8
+    - calm/low/slow/piano | late-night bar, even slower, very long pauses
     - calm/low/medium/saxophone
     - calm/low/slow/guitar | clean hollow-body jazz guitar, soft single notes, cool jazz
-    - nostalgic/low/slow/trumpet @0.8
+    - nostalgic/low/slow/trumpet | late-night bar, even slower, long breaths
     - calm/low/slow/vibraphone | cool jazz lounge, mellow
   period:
-    - calm/low/medium/harpsichord @0.8
+    - calm/low/slow/harpsichord | courtly, even slower, long pauses
     - tender/low/slow/violin
-    - happy/medium/medium/flute @0.75
-    - nostalgic/low/slow/cello @0.8
+    - happy/low/slow/flute | courtly dance feeling but slow and unhurried
+    - nostalgic/low/slow/cello | even slower, long held notes
     - calm/low/slow/harp
   folk:
     - happy/low/slow/accordion | gentle village tune, unhurried

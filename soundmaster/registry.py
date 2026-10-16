@@ -86,6 +86,7 @@ class VocabItem:
     text: str = ""  # фрагмент описания для генератора (Lyria понимает английский)
     config: dict[str, Any] = field(default_factory=dict)  # параметры генератора: bpm, density, brightness
     fallback: str | None = None  # музыкальное состояние-файл на случай сбоя генератора (только у mood)
+    solo: str | None = None  # только у жанра: свой «сольный» текст вместо общего (например, с бочкой)
 
 
 @dataclass
@@ -160,21 +161,31 @@ class MusicVocabulary:
             # иначе Lyria добавляет инструменты из описания жанра).
             parts = [(g, 0.5), (self.instruments[style.instrument], 1.5), (m, 1.0), (e, 0.5), (t, 0.5)]
         prompts = [{"text": x.text, "weight": w} for x, w in parts if x.text]
-        if self.solo and style.instrument != "auto":
-            prompts.append({"text": self.solo, "weight": 1.0})
+        solo = g.solo if g.solo is not None else self.solo
+        if solo and style.instrument != "auto":
+            prompts.append({"text": solo, "weight": 1.0})
+        return {"prompts": prompts, "config": self._config(parts)}
+
+    def _config(self, parts: list, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Общие параметры → (для пула) параметры записи → параметры слов: жанр может переопределить
+        bpm или включить барабаны, и это сильнее общих правил."""
         config: dict[str, Any] = dict(self.base_config)
+        config.update(extra or {})
         for x, _ in parts:
             config.update(x.config)
-        return {"prompts": prompts, "config": config}
+        return config
 
     def pool_preset(self, style: MusicStyle, extra: str = "") -> dict[str, Any]:
         """Пресет для записи мелодии пула: живой пресет + строже к описанию + «под диалог»."""
         p = self.preset(style)
+        g, m, e, t = self.genres[style.genre], self.moods[style.mood], self.energy[style.energy], self.tempo[style.tempo]
+        items = [(g, 0), (m, 0), (e, 0), (t, 0)] + ([(self.instruments[style.instrument], 0)]
+                                                      if style.instrument != "auto" else [])
+        p["config"] = self._config(items, self.pool_config)
         if extra:
             p["prompts"].insert(2, {"text": extra, "weight": 1.2})
         if self.pool_text:
             p["prompts"].append({"text": self.pool_text, "weight": 1.0})
-        p["config"].update(self.pool_config)
         return p
 
 
@@ -186,7 +197,6 @@ class PoolTrack:
     file: str
     n: int  # номер в жанре, с 1
     extra: str = ""  # уточнение к промпту именно этой мелодии (способ игры, характер)
-    stretch: float = 1.0  # замедление после записи (0.8 — на 20 % медленнее, тон тот же)
 
 
 @dataclass
@@ -369,15 +379,12 @@ def _parse_pool(raw: dict[str, Any] | None, vocab: MusicVocabulary | None) -> di
         _require(isinstance(items, list) and items, f"music_pool.{genre}: нужен список мелодий")
         tracks = []
         for n, spec in enumerate(items, 1):
-            # «настроение/энергия/темп/инструмент [@0.8] [| уточнение к промпту]»
+            # «настроение/энергия/темп/инструмент [| уточнение к промпту]»
             head, _, extra = str(spec).partition("|")
-            head, _, stretch = head.strip().partition("@")
             style = MusicStyle.parse(f"{genre}/{head.strip()}")
             bad = vocab.validate(style)
             _require(bad is None, f"music_pool.{genre}[{n}] {spec!r}: {bad}")
-            k = float(stretch) if stretch.strip() else 1.0
-            _require(0.5 <= k <= 1.0, f"music_pool.{genre}[{n}]: замедление {k} вне 0.5–1.0")
-            tracks.append(PoolTrack(style, f"pool/{genre}/{n}-{style.instrument}.flac", n, extra.strip(), k))
+            tracks.append(PoolTrack(style, f"pool/{genre}/{n}-{style.instrument}.flac", n, extra.strip()))
         pool[genre] = tracks
     return pool
 
@@ -401,7 +408,8 @@ def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState])
             _require(fb is None or fb in states, f"music_vocabulary.{key}.{iid}: нет состояния {fb!r}")
             _require(fb is None or states[fb].channel == "music",
                      f"music_vocabulary.{key}.{iid}: резерв {fb!r} должен быть на канале music")
-            table[iid] = VocabItem(iid, it.get("label", iid), it.get("text", ""), dict(it.get("config") or {}), fb)
+            table[iid] = VocabItem(iid, it.get("label", iid), it.get("text", ""), dict(it.get("config") or {}), fb,
+                                   it.get("solo") if key == "genres" else None)
         tables[key] = table
     return MusicVocabulary(**tables, fade_in=float(raw.get("fade_in", 3.0)),
                            fade_out=float(raw.get("fade_out", 3.0)), gain_db=float(raw.get("gain_db", -8.0)),
