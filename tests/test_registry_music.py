@@ -382,3 +382,33 @@ def test_select_several(registry):
 
     got = select(registry, "noir/2, folk")
     assert [f"{t.style.genre}/{t.n}" for t in got] == ["noir/2"] + [f"folk/{n}" for n in range(1, 6)]
+
+
+def test_pool_spec_extra_and_stretch(tmp_path):
+    from soundmaster.registry import load_registry
+
+    p = tmp_path / "r.yaml"
+    p.write_text(
+        "music_vocabulary:\n  solo: one\n  genres: {noir: {}}\n  moods: {sad: {}}\n  energy: {low: {}}\n"
+        "  tempo: {slow: {}}\n  instruments: {cello: {text: solo cello}}\n"
+        "music_pool:\n  noir:\n    - sad/low/slow/cello @0.8 | lonely, long notes\n    - sad/low/slow/cello\n",
+        encoding="utf-8")
+    t1, t2 = load_registry(p).pool["noir"]
+    assert (t1.stretch, t1.extra) == (0.8, "lonely, long notes") and (t2.stretch, t2.extra) == (1.0, "")
+    pr = load_registry(p).vocabulary.pool_preset(t1.style, t1.extra)
+    assert {"text": "lonely, long notes", "weight": 1.2} in pr["prompts"]
+
+
+def test_time_stretch_keeps_pitch_length_scales():
+    import shutil
+
+    from soundmaster.music.pool import SR, time_stretch
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    t = np.arange(4 * SR) / SR
+    x = np.stack([np.sin(2 * np.pi * 440 * t)] * 2, axis=1).astype(np.float32) * 0.3
+    y = time_stretch(x, 0.8)
+    assert abs(len(y) - len(x) / 0.8) < SR * 0.05
+    spec = np.abs(np.fft.rfft(y[SR:2 * SR, 0]))
+    assert abs(np.argmax(spec) - 440) <= 2  # тон тот же (1 Гц на бин при окне 1 с)

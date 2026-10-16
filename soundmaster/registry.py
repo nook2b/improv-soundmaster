@@ -167,9 +167,11 @@ class MusicVocabulary:
             config.update(x.config)
         return {"prompts": prompts, "config": config}
 
-    def pool_preset(self, style: MusicStyle) -> dict[str, Any]:
+    def pool_preset(self, style: MusicStyle, extra: str = "") -> dict[str, Any]:
         """Пресет для записи мелодии пула: живой пресет + строже к описанию + «под диалог»."""
         p = self.preset(style)
+        if extra:
+            p["prompts"].insert(2, {"text": extra, "weight": 1.2})
         if self.pool_text:
             p["prompts"].append({"text": self.pool_text, "weight": 1.0})
         p["config"].update(self.pool_config)
@@ -183,6 +185,8 @@ class PoolTrack:
     style: MusicStyle
     file: str
     n: int  # номер в жанре, с 1
+    extra: str = ""  # уточнение к промпту именно этой мелодии (способ игры, характер)
+    stretch: float = 1.0  # замедление после записи (0.8 — на 20 % медленнее, тон тот же)
 
 
 @dataclass
@@ -365,10 +369,15 @@ def _parse_pool(raw: dict[str, Any] | None, vocab: MusicVocabulary | None) -> di
         _require(isinstance(items, list) and items, f"music_pool.{genre}: нужен список мелодий")
         tracks = []
         for n, spec in enumerate(items, 1):
-            style = MusicStyle.parse(f"{genre}/{spec}")
+            # «настроение/энергия/темп/инструмент [@0.8] [| уточнение к промпту]»
+            head, _, extra = str(spec).partition("|")
+            head, _, stretch = head.strip().partition("@")
+            style = MusicStyle.parse(f"{genre}/{head.strip()}")
             bad = vocab.validate(style)
             _require(bad is None, f"music_pool.{genre}[{n}] {spec!r}: {bad}")
-            tracks.append(PoolTrack(style, f"pool/{genre}/{n}-{style.instrument}.flac", n))
+            k = float(stretch) if stretch.strip() else 1.0
+            _require(0.5 <= k <= 1.0, f"music_pool.{genre}[{n}]: замедление {k} вне 0.5–1.0")
+            tracks.append(PoolTrack(style, f"pool/{genre}/{n}-{style.instrument}.flac", n, extra.strip(), k))
         pool[genre] = tracks
     return pool
 

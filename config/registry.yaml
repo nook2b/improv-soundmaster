@@ -142,14 +142,15 @@ music_vocabulary:
   fade_out: 3
   # Музыка только сольная (решение Ивана, 2026-10-10): жанр задаёт характер, а не инструменты;
   # инструмент выбирается всегда, к запросу Lyria добавляется этот текст.
-  solo: "solo performance, one single instrument only, no accompaniment, no drums, no percussion, no other instruments"
+  solo: "exactly one unaccompanied solo instrument playing a sparse, simple monophonic melody; no chords, no accompaniment, no percussion, no bass, no pads, no other instruments, no vocals"
   # Темп числом и без барабанов/баса — для всей музыки (решение после прослушки 2026-10-16: «слишком
   # быстро», «вступают другие инструменты»). Слова «slow tempo» Lyria почти не слушает, bpm — слушает.
   # bpm один на всё шоу: его смена в Lyria = сброс контекста (обрыв), а постоянный — без обрывов.
   base_config: { bpm: 66, mute_drums: true, mute_bass: true }
   # Только для записи пула: строже следовать описанию, меньше случайности (ровнее мелодия).
-  pool_config: { guidance: 5.5, temperature: 0.8 }
-  pool_text: "sparse and simple, one clear melody, slow phrases with space between them, quiet background music under spoken dialogue"
+  # Формула из гайда по промптингу Lyria (2026-10-17): «под диалог», ровная динамика, без кульминаций.
+  pool_config: { bpm: 60, guidance: 5.0, temperature: 0.8 }
+  pool_text: "minimal underscore beneath spoken theatre dialogue, lots of space between notes, soft steady dynamics, constant intensity, no dramatic builds, no climax, no sudden accents, a small repeating loop-friendly motif"
   genres:
     underscore:  { label: "Нейтральный фон", text: "subtle unobtrusive cinematic background, simple sparse melody" }
     drama:       { label: "Драма", text: "dramatic emotional film score feeling, expressive phrasing" }
@@ -188,26 +189,37 @@ music_vocabulary:
     high:   { label: "мощно", config: { density: 0.4, brightness: 0.6 } }
   # Инструмент — всегда один. Модель выбирает его на сцену; в соседних сценах инструмент не повторяется.
   instruments:
-    guitar:      { label: "гитара", text: "solo acoustic guitar, fingerpicking" }
-    electric:    { label: "электрогитара", text: "solo clean electric guitar with reverb" }
-    piano:       { label: "фортепиано", text: "solo soft felt piano, sparse slow chords and simple melody, sustain pedal" }
-    violin:      { label: "скрипка", text: "solo violin" }
-    cello:       { label: "виолончель", text: "solo cello" }
-    banjo:       { label: "банджо", text: "solo banjo" }
-    harmonica:   { label: "губная гармошка", text: "solo harmonica" }
-    accordion:   { label: "аккордеон", text: "solo accordion" }
-    ukulele:     { label: "укулеле", text: "solo ukulele" }
-    mandolin:    { label: "мандолина", text: "solo mandolin" }
-    balalaika:   { label: "балалайка", text: "solo balalaika, russian folk" }
-    harp:        { label: "арфа", text: "solo harp" }
-    flute:       { label: "флейта", text: "solo flute" }
-    clarinet:    { label: "кларнет", text: "solo clarinet" }
-    saxophone:   { label: "саксофон", text: "solo saxophone" }
-    trumpet:     { label: "труба", text: "solo muted trumpet" }
-    marimba:     { label: "маримба/ксилофон", text: "solo marimba" }
-    musicbox:    { label: "музыкальная шкатулка", text: "solo music box, celesta" }
-    harpsichord: { label: "клавесин", text: "solo harpsichord" }
-    synth:       { label: "синтезатор", text: "solo analog synthesizer lead, no drums" }
+    guitar:      { label: "гитара", text: "solo nylon-string acoustic guitar, gently fingerpicked single notes" }
+    electric:    { label: "электрогитара", text: "solo clean electric guitar with reverb, single-note melody" }
+    piano:       { label: "фортепиано", text: "solo soft piano, single-note melody only, no chords, no left-hand accompaniment" }
+    violin:      { label: "скрипка", text: "solo violin, one melodic line, measured gentle bowing" }
+    pizzicato:   { label: "скрипка пиццикато", text: "solo violin played pizzicato, plucked single notes" }
+    cello:       { label: "виолончель", text: "solo cello, sustained gentle notes in a low register" }
+    doublebass:  { label: "контрабас", text: "solo upright double bass, softly plucked pizzicato, low register" }
+    banjo:       { label: "банджо", text: "solo banjo, gently plucked single notes" }
+    harmonica:   { label: "губная гармошка", text: "solo harmonica, single breathy notes" }
+    accordion:   { label: "аккордеон", text: "solo accordion, gentle single-note melody, soft bellows" }
+    ukulele:     { label: "укулеле", text: "solo ukulele, gently plucked single notes, no strumming" }
+    mandolin:    { label: "мандолина", text: "solo mandolin, soft slow tremolo single notes" }
+    balalaika:   { label: "балалайка", text: "solo balalaika, Russian folk, soft plucked single notes" }
+    harp:        { label: "арфа", text: "solo harp, sparse plucked single notes, no arpeggios" }
+    lute:        { label: "лютня", text: "solo medieval lute, gently plucked single notes" }
+    flute:       { label: "флейта", text: "solo flute, soft breathy single line" }
+    clarinet:    { label: "кларнет", text: "solo clarinet, soft single melodic line" }
+    bassoon:     { label: "фагот", text: "solo bassoon, short detached notes" }
+    saxophone:   { label: "саксофон", text: "solo tenor saxophone, breathy single melodic line" }
+    trumpet:     { label: "труба", text: "solo muted trumpet, one single melodic line" }
+    horn:        { label: "валторна", text: "solo French horn, warm noble single line" }
+    marimba:     { label: "маримба/ксилофон", text: "solo marimba, soft mallets, gentle single notes" }
+    vibraphone:  { label: "вибрафон", text: "solo vibraphone, soft mallets, mellow single notes" }
+    celesta:     { label: "челеста", text: "solo celesta, soft magical single notes" }
+    kalimba:     { label: "калимба", text: "solo kalimba, delicate single notes" }
+    musicbox:    { label: "музыкальная шкатулка", text: "solo music box, delicate single notes" }
+    harpsichord: { label: "клавесин", text: "solo harpsichord, single-note melody, no chords" }
+    synth:       { label: "синтезатор", text: "one monophonic analog synthesizer voice, soft rounded tone, no pads, no arpeggiator" }
+    theremin:    { label: "терменвокс", text: "solo theremin, wavering eerie single line" }
+    saw:         { label: "пила", text: "solo musical saw played with a bow, wavering eerie tone" }
+    slideguitar: { label: "слайд-гитара", text: "solo dobro slide guitar, dusty single notes" }
   # Темп шоу задан bpm в base_config; слова здесь — характер фраз (быстрее — значит подвижнее, а не гонка).
   tempo:
     slow:   { label: "медленно", text: "very slow, long sustained notes, unhurried" }
@@ -219,21 +231,115 @@ music_vocabulary:
 # служат резервом, если генератор недоступен (нет интернета). Файлы — sounds/pool/<жанр>/<n>-<инструмент>.flac,
 # создаются командой `python -m soundmaster make-music-pool` (Lyria, нужен GEMINI_API_KEY). В git не кладутся.
 music_pool:
-  underscore:  [calm/low/slow/piano, calm/low/slow/guitar, mysterious/low/slow/harp, nostalgic/low/slow/cello, tender/low/medium/musicbox]
-  drama:       [tense/low/slow/cello, sad/low/slow/piano, tense/medium/medium/violin, nostalgic/low/slow/guitar, sad/low/slow/clarinet]
-  comedy:      [playful/medium/medium/ukulele, absurd/medium/fast/clarinet, playful/low/medium/marimba, absurd/medium/medium/accordion, playful/medium/fast/banjo]
-  noir:        [mysterious/low/slow/saxophone, tense/low/slow/trumpet, mysterious/low/medium/piano, ominous/low/slow/electric, nostalgic/low/slow/clarinet]
-  thriller:    [tense/medium/medium/synth, anxious/low/medium/piano, ominous/low/slow/cello, tense/medium/fast/violin, mysterious/low/slow/electric]
-  horror:      [ominous/low/slow/musicbox, ominous/low/slow/cello, anxious/low/slow/violin, mysterious/low/slow/piano, ominous/low/slow/harp]
-  romance:     [tender/low/slow/piano, tender/low/slow/guitar, nostalgic/low/slow/violin, happy/low/medium/mandolin, tender/low/slow/saxophone]
-  western:     [tense/low/slow/harmonica, calm/low/slow/guitar, playful/medium/medium/banjo, tense/medium/medium/electric, nostalgic/low/slow/trumpet]
-  action:      [tense/high/fast/violin, tense/high/fast/electric, anxious/high/fast/piano, triumphant/high/fast/trumpet, tense/high/fast/synth]
-  fantasy:     [mysterious/low/slow/harp, happy/low/medium/flute, tender/low/slow/musicbox, playful/medium/medium/clarinet, mysterious/low/medium/marimba]
-  scifi:       [mysterious/low/slow/synth, calm/low/slow/synth, anxious/low/slow/synth, nostalgic/low/slow/synth, tense/medium/medium/synth]
-  epic:        [triumphant/high/medium/trumpet, triumphant/medium/medium/piano, tense/high/medium/cello, triumphant/high/medium/violin, nostalgic/medium/slow/flute]
-  cartoon:     [playful/medium/fast/marimba, absurd/medium/fast/clarinet, playful/medium/medium/ukulele, absurd/medium/medium/harmonica, playful/medium/fast/piano]
-  lounge:      [calm/low/medium/piano, calm/low/medium/saxophone, happy/low/medium/guitar, nostalgic/low/slow/trumpet, calm/low/medium/electric]
-  period:      [calm/low/medium/harpsichord, tender/low/slow/violin, happy/medium/medium/flute, nostalgic/low/slow/cello, calm/low/slow/harp]
-  folk:        [happy/medium/medium/accordion, nostalgic/low/slow/guitar, playful/medium/fast/mandolin, happy/medium/medium/balalaika, tender/low/slow/violin]
-  electronic:  [happy/medium/medium/synth, calm/low/medium/synth, playful/medium/medium/synth, mysterious/low/medium/synth, tense/medium/medium/synth]
-  sport:       [triumphant/high/fast/electric, triumphant/high/medium/trumpet, tense/high/fast/synth, happy/high/fast/piano, triumphant/high/fast/violin]
+  # «настроение/энергия/темп/инструмент [@замедление] [| уточнение к промпту]». Раунд 3 (2026-10-17):
+  # оставленные на прослушке — без изменений; «мелодия хорошая, но медленнее» — та же запись, замедлена (@0.8);
+  # три мелодии «электроники» перенесены в нуар, триллер и фантастику (по оценке Ивана); остальной брак —
+  # новая запись по формуле гайда, со стереотипным для жанра инструментом.
+  underscore:
+    - calm/low/slow/piano | gentle calm, single soft notes with long pauses
+    - calm/low/slow/guitar
+    - mysterious/low/slow/kalimba | quietly curious, distant
+    - nostalgic/low/slow/cello
+    - tender/low/medium/musicbox
+  drama:
+    - tense/low/slow/cello
+    - sad/low/slow/piano @0.8
+    - tense/low/slow/violin | restrained tension, one violin line only, no second violin, no accompaniment
+    - nostalgic/low/slow/guitar
+    - sad/low/slow/clarinet @0.85
+  comedy:
+    - playful/low/slow/ukulele | awkward comedy, tiny hesitations, short playful phrases
+    - absurd/low/slow/clarinet | whimsical silent-film comedy, light staccato, mischievous but not frantic
+    - playful/low/medium/marimba
+    - absurd/low/slow/bassoon | pompous but clumsy, dry deadpan humor
+    - playful/low/slow/pizzicato | sneaky tiptoeing comedy
+  noir:
+    - mysterious/low/slow/saxophone | 1940s film noir, smoky blue notes, long breathing spaces, no piano, no bass, no drums
+    - tense/low/slow/trumpet | one muted trumpet only, distant, no other brass
+    - happy/medium/medium/synth
+    - ominous/low/slow/electric
+    - nostalgic/low/slow/clarinet
+  thriller:
+    - tense/medium/medium/synth
+    - calm/low/medium/synth
+    - ominous/low/slow/cello
+    - tense/medium/fast/violin
+    - mysterious/low/slow/electric
+  horror:
+    - ominous/low/slow/musicbox
+    - ominous/low/slow/cello
+    - anxious/low/slow/violin | creepy, eerie slow dissonant glissandi and harmonics, unsettling
+    - ominous/low/slow/piano | isolated low single notes, wide gaps, soft touch
+    - ominous/low/slow/saw | haunting, creepy
+  romance:
+    - tender/low/slow/piano | warm tender love theme, affectionate
+    - tender/low/slow/guitar
+    - nostalgic/low/slow/violin
+    - tender/low/slow/accordion | French cafe musette, slow romantic waltz feeling
+    - tender/low/slow/saxophone
+  western:
+    - tense/low/slow/harmonica
+    - calm/low/slow/guitar | dry dusty frontier melody, quiet, even volume, no loud plucks
+    - nostalgic/low/slow/slideguitar | lonesome old west
+    - tense/low/slow/electric | spaghetti western twangy guitar riff with tremolo, single notes
+    - nostalgic/low/slow/trumpet | one lonely distant trumpet only, no other brass
+  action:
+    - tense/high/fast/violin
+    - tense/high/fast/electric
+    - tense/medium/medium/cello | urgent staccato ostinato, quiet but driving
+    - triumphant/high/fast/trumpet
+    - tense/high/fast/synth
+  fantasy:
+    - mysterious/low/slow/harp | delicate folk-inspired modal melody, wandering storyteller
+    - happy/low/medium/flute
+    - tender/low/slow/lute | medieval tavern, wandering storyteller
+    - playful/medium/medium/clarinet
+    - mysterious/low/slow/celesta | gentle fairy-tale magic, no accents
+  scifi:
+    - mysterious/low/slow/synth @0.8
+    - tense/medium/medium/synth
+    - anxious/low/slow/theremin | 1950s science fiction
+    - nostalgic/low/slow/synth | weightless space, mysterious signal
+    - tense/medium/medium/synth
+  epic:
+    - triumphant/high/medium/trumpet
+    - triumphant/low/slow/horn | heroic, noble, restrained
+    - tense/low/slow/cello | grand but restrained, one cello only
+    - triumphant/low/slow/violin | heroic, noble, one violin only
+    - nostalgic/medium/slow/flute @0.85
+  cartoon:
+    - playful/medium/fast/marimba
+    - absurd/low/slow/clarinet | silly cartoon, light staccato, unhurried
+    - playful/low/slow/ukulele | cartoon, gently plucked, tiny pauses
+    - absurd/medium/medium/harmonica @0.7
+    - absurd/low/slow/bassoon | clumsy cartoon tiptoeing
+  lounge:
+    - calm/low/medium/piano @0.8
+    - calm/low/medium/saxophone
+    - calm/low/slow/guitar | clean hollow-body jazz guitar, soft single notes, cool jazz
+    - nostalgic/low/slow/trumpet @0.8
+    - calm/low/slow/vibraphone | cool jazz lounge, mellow
+  period:
+    - calm/low/medium/harpsichord @0.8
+    - tender/low/slow/violin
+    - happy/medium/medium/flute @0.75
+    - nostalgic/low/slow/cello @0.8
+    - calm/low/slow/harp
+  folk:
+    - happy/low/slow/accordion | gentle village tune, unhurried
+    - nostalgic/low/slow/guitar
+    - playful/low/slow/mandolin | gentle village dance, unhurried
+    - happy/low/slow/balalaika | slow Russian folk song
+    - tender/low/slow/violin
+  electronic:
+    - happy/low/medium/synth | club-style hypnotic repeating synth riff, deep house feeling
+    - calm/low/medium/synth | chill electronic lounge synth lead
+    - playful/low/medium/synth | playful bleepy electro synth riff
+    - mysterious/low/slow/synth | dark minimal techno synth riff
+    - tense/low/medium/synth | pulsing electronic sequence feeling
+  sport:
+    - triumphant/low/medium/electric | stadium rock anthem guitar riff, confident, not rushed
+    - triumphant/low/medium/trumpet | sports fanfare motif, one trumpet only
+    - tense/low/medium/synth | competitive pulsing synth riff
+    - happy/low/medium/horn | proud victorious horn call
+    - triumphant/low/medium/violin | heroic, one violin only

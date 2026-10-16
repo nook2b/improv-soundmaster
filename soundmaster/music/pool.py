@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -69,6 +71,21 @@ def busyness(x: np.ndarray, sr: int = SR) -> float:
         if i - last >= int(0.05 * sr / hop):
             hits, last = hits + 1, i
     return hits / (len(m) / sr)
+
+
+def time_stretch(x: np.ndarray, k: float, sr: int = SR) -> np.ndarray:
+    """Замедлить петлю в 1/k раз без смены тона, сохранив бесшовность (растягиваем три копии подряд)."""
+    if k >= 0.999:
+        return x
+    n = int(len(x) / k)
+    src = np.ascontiguousarray(np.concatenate([x, x, x]), dtype="<f4").tobytes()
+    for flt in (f"rubberband=tempo={k}", f"atempo={k}"):  # rubberband чище; atempo — если его нет
+        r = subprocess.run(["ffmpeg", "-v", "error", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-",
+                            "-af", flt, "-f", "f32le", "-"], input=src, capture_output=True)
+        if r.returncode == 0 and r.stdout:
+            y = np.frombuffer(r.stdout, "<f4").reshape(-1, 2)
+            return y[n:2 * n].copy() if len(y) >= 2 * n else y[:n].copy()
+    raise RuntimeError("ffmpeg не смог замедлить звук")
 
 
 def write_flac(path: Path, x: np.ndarray, sr: int = SR) -> None:
@@ -155,16 +172,19 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
     async def one(i: int, t: PoolTrack, path: Path, sem: asyncio.Semaphore) -> None:
         async with sem:
             name = f"{t.file} ({vocab.label(t.style)})"
-            best: tuple[float, np.ndarray] | None = None
+            best: tuple[float, np.ndarray, dict] | None = None
             err = ""
             for _take in range(max(1, takes)):
                 for attempt in (1, 2, 3):
                     try:
-                        raw = await rec(vocab.pool_preset(t.style), SKIP_START + seconds + LOOP_XFADE, key)
+                        preset = vocab.pool_preset(t.style, t.extra)
+                        seed = random.randrange(1, 2**31)
+                        preset["config"]["seed"] = seed
+                        raw = await rec(preset, SKIP_START + seconds + LOOP_XFADE, key)
                         x = make_loop(raw[int(SKIP_START * SR):], seconds)
                         b = busyness(x)
                         if best is None or b < best[0]:
-                            best = (b, x)
+                            best = (b, x, preset)
                         break
                     except Exception as e:  # noqa: BLE001 — сеть/Lyria: пробуем ещё, потом пропускаем
                         err = f"{type(e).__name__}: {e}"
@@ -175,7 +195,12 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
                 report.errors.append((t.file, err))
                 progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА: {name} — {err}")
                 return
-            write_flac(path, normalize(best[1]))
+            write_flac(path, normalize(time_stretch(best[1], t.stretch)))
+            # Как получена мелодия (промпт, сид, модель) — чтобы удачную можно было повторить.
+            path.with_suffix(".json").write_text(json.dumps(
+                {"model": "lyria-realtime-exp", "preset": best[2], "busyness": round(best[0], 2),
+                 "stretch": t.stretch, "made": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False, indent=1),
+                encoding="utf-8")
             report.made.append(t.file)
             progress(f"[{len(report.made) + len(report.errors)}/{total}] готово: {name}, {best[0]:.1f} нот/с")
 
