@@ -126,6 +126,12 @@ class MusicVocabulary:
     # Непусто — музыка только сольная: инструмент обязателен (auto нельзя), а этот текст
     # добавляется к запросу генератора, чтобы Lyria не дописывала аккомпанемент.
     solo: str = ""
+    # Общие параметры генератора для всей музыки (Lyria: bpm, mute_drums, mute_bass …). bpm один на
+    # всё шоу: смена bpm в Lyria требует сброса контекста (обрыв), а постоянный — никогда.
+    base_config: dict[str, Any] = field(default_factory=dict)
+    # Только для записи пула (плавные переходы там не нужны): guidance, temperature … и доп. текст.
+    pool_config: dict[str, Any] = field(default_factory=dict)
+    pool_text: str = ""
 
     def validate(self, style: MusicStyle) -> str | None:
         for name, value, table in (("genre", style.genre, self.genres), ("mood", style.mood, self.moods),
@@ -156,10 +162,18 @@ class MusicVocabulary:
         prompts = [{"text": x.text, "weight": w} for x, w in parts if x.text]
         if self.solo and style.instrument != "auto":
             prompts.append({"text": self.solo, "weight": 1.0})
-        config: dict[str, Any] = {}
+        config: dict[str, Any] = dict(self.base_config)
         for x, _ in parts:
             config.update(x.config)
         return {"prompts": prompts, "config": config}
+
+    def pool_preset(self, style: MusicStyle) -> dict[str, Any]:
+        """Пресет для записи мелодии пула: живой пресет + строже к описанию + «под диалог»."""
+        p = self.preset(style)
+        if self.pool_text:
+            p["prompts"].append({"text": self.pool_text, "weight": 1.0})
+        p["config"].update(self.pool_config)
+        return p
 
 
 @dataclass
@@ -382,4 +396,7 @@ def _parse_vocabulary(raw: dict[str, Any] | None, states: dict[str, MusicState])
         tables[key] = table
     return MusicVocabulary(**tables, fade_in=float(raw.get("fade_in", 3.0)),
                            fade_out=float(raw.get("fade_out", 3.0)), gain_db=float(raw.get("gain_db", -8.0)),
-                           solo=str(raw.get("solo") or ""))
+                           solo=str(raw.get("solo") or ""),
+                           base_config=dict(raw.get("base_config") or {}),
+                           pool_config=dict(raw.get("pool_config") or {}),
+                           pool_text=str(raw.get("pool_text") or ""))

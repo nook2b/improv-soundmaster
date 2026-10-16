@@ -143,13 +143,20 @@ music_vocabulary:
   # Музыка только сольная (решение Ивана, 2026-10-10): жанр задаёт характер, а не инструменты;
   # инструмент выбирается всегда, к запросу Lyria добавляется этот текст.
   solo: "solo performance, one single instrument only, no accompaniment, no drums, no percussion, no other instruments"
+  # Темп числом и без барабанов/баса — для всей музыки (решение после прослушки 2026-10-16: «слишком
+  # быстро», «вступают другие инструменты»). Слова «slow tempo» Lyria почти не слушает, bpm — слушает.
+  # bpm один на всё шоу: его смена в Lyria = сброс контекста (обрыв), а постоянный — без обрывов.
+  base_config: { bpm: 66, mute_drums: true, mute_bass: true }
+  # Только для записи пула: строже следовать описанию, меньше случайности (ровнее мелодия).
+  pool_config: { guidance: 5.5, temperature: 0.8 }
+  pool_text: "sparse and simple, one clear melody, slow phrases with space between them, quiet background music under spoken dialogue"
   genres:
     underscore:  { label: "Нейтральный фон", text: "subtle unobtrusive cinematic background, simple sparse melody" }
     drama:       { label: "Драма", text: "dramatic emotional film score feeling, expressive phrasing" }
     comedy:      { label: "Комедия", text: "quirky comedic tune, bouncy staccato phrases" }
     noir:        { label: "Нуар/детектив", text: "film noir detective jazz, smoky bluesy phrasing" }
     thriller:    { label: "Триллер", text: "thriller suspense, repetitive ostinato, pulsing" }
-    horror:      { label: "Ужасы", text: "horror, eerie dissonant intervals, unsettling, sparse" }
+    horror:      { label: "Ужасы", text: "horror film, creepy, dark, eerie dissonant intervals, unsettling tension, sparse" }
     romance:     { label: "Романтика", text: "romantic, warm lyrical melody" }
     western:     { label: "Вестерн", text: "spaghetti western, twangy, wide open desert feeling" }
     action:      { label: "Экшн/погоня", text: "action chase, driving fast repeated notes, urgent" }
@@ -176,14 +183,14 @@ music_vocabulary:
     calm:        { label: "спокойствие", text: "calm, peaceful, relaxed" }
     nostalgic:   { label: "ностальгия", text: "nostalgic, wistful, bittersweet" }
   energy:
-    low:    { label: "тихо", config: { density: 0.2, brightness: 0.3 } }
-    medium: { label: "средне", config: { density: 0.45, brightness: 0.5 } }
-    high:   { label: "мощно", config: { density: 0.75, brightness: 0.65 } }
+    low:    { label: "тихо", config: { density: 0.12, brightness: 0.3 } }
+    medium: { label: "средне", config: { density: 0.25, brightness: 0.45 } }
+    high:   { label: "мощно", config: { density: 0.4, brightness: 0.6 } }
   # Инструмент — всегда один. Модель выбирает его на сцену; в соседних сценах инструмент не повторяется.
   instruments:
     guitar:      { label: "гитара", text: "solo acoustic guitar, fingerpicking" }
     electric:    { label: "электрогитара", text: "solo clean electric guitar with reverb" }
-    piano:       { label: "фортепиано", text: "solo piano" }
+    piano:       { label: "фортепиано", text: "solo soft felt piano, sparse slow chords and simple melody, sustain pedal" }
     violin:      { label: "скрипка", text: "solo violin" }
     cello:       { label: "виолончель", text: "solo cello" }
     banjo:       { label: "банджо", text: "solo banjo" }
@@ -201,11 +208,11 @@ music_vocabulary:
     musicbox:    { label: "музыкальная шкатулка", text: "solo music box, celesta" }
     harpsichord: { label: "клавесин", text: "solo harpsichord" }
     synth:       { label: "синтезатор", text: "solo analog synthesizer lead, no drums" }
-  # Темп — словами, а не bpm: смена bpm в Lyria требует сброса и звучит обрывом, а слова перетекают плавно.
+  # Темп шоу задан bpm в base_config; слова здесь — характер фраз (быстрее — значит подвижнее, а не гонка).
   tempo:
-    slow:   { label: "медленно", text: "slow tempo" }
-    medium: { label: "умеренно", text: "moderate tempo" }
-    fast:   { label: "быстро", text: "fast tempo, driving rhythm" }
+    slow:   { label: "медленно", text: "very slow, long sustained notes, unhurried" }
+    medium: { label: "умеренно", text: "calm relaxed pace, unhurried phrasing" }
+    fast:   { label: "быстро", text: "gently moving, light steady pulse, not rushed" }
 
 # Пул записанных мелодий: по 5 на жанр, у каждой свой инструмент (настроение/энергия/темп/инструмент).
 # Играют с ручных кнопок жанров на пульте (повторное нажатие — следующая, с плавным переходом) и
@@ -222,11 +229,11 @@ music_pool:
   western:     [tense/low/slow/harmonica, calm/low/slow/guitar, playful/medium/medium/banjo, tense/medium/medium/electric, nostalgic/low/slow/trumpet]
   action:      [tense/high/fast/violin, tense/high/fast/electric, anxious/high/fast/piano, triumphant/high/fast/trumpet, tense/high/fast/synth]
   fantasy:     [mysterious/low/slow/harp, happy/low/medium/flute, tender/low/slow/musicbox, playful/medium/medium/clarinet, mysterious/low/medium/marimba]
-  scifi:       [mysterious/low/slow/synth, mysterious/low/slow/electric, calm/low/slow/piano, mysterious/low/medium/harp, tense/medium/medium/marimba]
+  scifi:       [mysterious/low/slow/synth, calm/low/slow/synth, anxious/low/slow/synth, nostalgic/low/slow/synth, tense/medium/medium/synth]
   epic:        [triumphant/high/medium/trumpet, triumphant/medium/medium/piano, tense/high/medium/cello, triumphant/high/medium/violin, nostalgic/medium/slow/flute]
   cartoon:     [playful/medium/fast/marimba, absurd/medium/fast/clarinet, playful/medium/medium/ukulele, absurd/medium/medium/harmonica, playful/medium/fast/piano]
   lounge:      [calm/low/medium/piano, calm/low/medium/saxophone, happy/low/medium/guitar, nostalgic/low/slow/trumpet, calm/low/medium/electric]
   period:      [calm/low/medium/harpsichord, tender/low/slow/violin, happy/medium/medium/flute, nostalgic/low/slow/cello, calm/low/slow/harp]
   folk:        [happy/medium/medium/accordion, nostalgic/low/slow/guitar, playful/medium/fast/mandolin, happy/medium/medium/balalaika, tender/low/slow/violin]
-  electronic:  [happy/medium/medium/synth, calm/low/medium/electric, playful/medium/medium/marimba, mysterious/low/medium/piano, tense/high/fast/synth]
+  electronic:  [happy/medium/medium/synth, calm/low/medium/synth, playful/medium/medium/synth, mysterious/low/medium/synth, tense/medium/medium/synth]
   sport:       [triumphant/high/fast/electric, triumphant/high/medium/trumpet, tense/high/fast/synth, happy/high/fast/piano, triumphant/high/fast/violin]

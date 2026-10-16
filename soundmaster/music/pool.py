@@ -48,6 +48,29 @@ def normalize(x: np.ndarray, rms_db: float = TARGET_RMS_DB, peak_db: float = -1.
     return (x * g).astype(np.float32)
 
 
+def busyness(x: np.ndarray, sr: int = SR) -> float:
+    """Сколько нот в секунду (атаки по спектральному потоку): меньше — спокойнее, лучше под речь."""
+    m = x.mean(axis=1) if x.ndim == 2 else x
+    n, hop = 2048, 512
+    frames = (len(m) - n) // hop
+    if frames < 8:
+        return 0.0
+    idx = np.arange(n)[None, :] + hop * np.arange(frames)[:, None]
+    spec = np.log1p(np.abs(np.fft.rfft(m[idx] * np.hanning(n), axis=1)) * 10)
+    flux = np.maximum(spec[1:] - spec[:-1], 0).sum(axis=1)
+    w = max(1, int(sr / hop))  # окно ~1 с для порога
+    pad = np.pad(flux, w, mode="edge")
+    local = np.lib.stride_tricks.sliding_window_view(pad, 2 * w + 1)[: len(flux)]
+    thr = local.mean(axis=1) + 1.0 * local.std(axis=1)
+    peak = (flux > thr) & (flux >= np.roll(flux, 1)) & (flux >= np.roll(flux, -1))
+    # не чаще одной атаки за 50 мс
+    hits, last = 0, -10**9
+    for i in np.nonzero(peak)[0]:
+        if i - last >= int(0.05 * sr / hop):
+            hits, last = hits + 1, i
+    return hits / (len(m) / sr)
+
+
 def write_flac(path: Path, x: np.ndarray, sr: int = SR) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp.flac")
@@ -90,20 +113,27 @@ class PoolReport:
 
 
 def select(registry: Registry, only: str | None = None) -> list[PoolTrack]:
-    """Все мелодии пула или только жанр (`noir`) / одна мелодия (`noir/2`)."""
+    """Все мелодии пула или только жанр (`noir`) / мелодия (`noir/2`); через запятую — несколько."""
     tracks = [t for ts in registry.pool.values() for t in ts]
     if not only:
         return tracks
-    genre, _, n = only.partition("/")
-    if genre not in registry.pool:
-        raise KeyError(f"в пуле нет жанра {genre!r}; есть: {', '.join(registry.pool)}")
-    return [t for t in registry.pool[genre] if not n or str(t.n) == n]
+    out: list[PoolTrack] = []
+    for part in (p.strip() for p in only.split(",") if p.strip()):
+        genre, _, n = part.partition("/")
+        if genre not in registry.pool:
+            raise KeyError(f"в пуле нет жанра {genre!r}; есть: {', '.join(registry.pool)}")
+        out += [t for t in registry.pool[genre] if (not n or str(t.n) == n) and t not in out]
+    return out
 
 
 def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only: str | None = None,
               force: bool = False, progress: Callable[[str], None] = print,
-              recorder: Callable | None = None) -> PoolReport:
-    """Записать недостающие мелодии пула (force — перезаписать). recorder — для тестов."""
+              recorder: Callable | None = None, takes: int = 3) -> PoolReport:
+    """Записать недостающие мелодии пула (force — перезаписать). recorder — для тестов.
+
+    На каждую мелодию — takes дублей; остаётся самый спокойный (меньше нот в секунду): под речь
+    актёров нужна редкая, неторопливая музыка.
+    """
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("нужен ffmpeg (Mac: brew install ffmpeg)")
     key = os.environ.get("GEMINI_API_KEY", "")
@@ -125,28 +155,36 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
     async def one(i: int, t: PoolTrack, path: Path, sem: asyncio.Semaphore) -> None:
         async with sem:
             name = f"{t.file} ({vocab.label(t.style)})"
-            for attempt in (1, 2, 3):
-                try:
-                    raw = await rec(vocab.preset(t.style), SKIP_START + seconds + LOOP_XFADE, key)
-                    x = make_loop(raw[int(SKIP_START * SR):], seconds)
-                    write_flac(path, normalize(x))
-                    report.made.append(t.file)
-                    progress(f"[{len(report.made) + len(report.errors)}/{total}] готово: {name}")
-                    return
-                except Exception as e:  # noqa: BLE001 — сеть/Lyria: пробуем ещё, потом пропускаем
-                    err = f"{type(e).__name__}: {e}"
-                    if attempt < 3:
-                        progress(f"повтор {attempt}: {name} — {err}")
-                        await asyncio.sleep(2 * attempt)
-            report.errors.append((t.file, err))
-            progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА: {name} — {err}")
+            best: tuple[float, np.ndarray] | None = None
+            err = ""
+            for _take in range(max(1, takes)):
+                for attempt in (1, 2, 3):
+                    try:
+                        raw = await rec(vocab.pool_preset(t.style), SKIP_START + seconds + LOOP_XFADE, key)
+                        x = make_loop(raw[int(SKIP_START * SR):], seconds)
+                        b = busyness(x)
+                        if best is None or b < best[0]:
+                            best = (b, x)
+                        break
+                    except Exception as e:  # noqa: BLE001 — сеть/Lyria: пробуем ещё, потом пропускаем
+                        err = f"{type(e).__name__}: {e}"
+                        if attempt < 3:
+                            progress(f"повтор {attempt}: {name} — {err}")
+                            await asyncio.sleep(2 * attempt)
+            if best is None:
+                report.errors.append((t.file, err))
+                progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА: {name} — {err}")
+                return
+            write_flac(path, normalize(best[1]))
+            report.made.append(t.file)
+            progress(f"[{len(report.made) + len(report.errors)}/{total}] готово: {name}, {best[0]:.1f} нот/с")
 
     async def main() -> None:
         sem = asyncio.Semaphore(max(1, parallel))
         await asyncio.gather(*(one(i, t, p, sem) for i, (t, p) in enumerate(todo)))
 
     if todo:
-        progress(f"Записываю {total} мелодий по {seconds:.0f} с, по {parallel} одновременно "
-                 f"(примерно {total * (seconds + 8) / max(1, parallel) / 60:.0f} мин)…")
+        progress(f"Записываю {total} мелодий по {seconds:.0f} с, {takes} дубля на каждую, по {parallel} "
+                 f"одновременно (примерно {total * takes * (seconds + 8) / max(1, parallel) / 60:.0f} мин)…")
         asyncio.run(main())
     return report

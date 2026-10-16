@@ -57,10 +57,11 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--force", action="store_true", help="перезаписать существующие (в т. ч. тестовые) файлы")
     mp = sub.add_parser("make-music-pool",
                         help="записать мелодии пула (кнопки жанров и резерв без интернета) через Lyria")
-    mp.add_argument("--only", help="только жанр (noir) или одна мелодия (noir/2)")
+    mp.add_argument("--only", help="только жанр (noir) или мелодия (noir/2); через запятую — несколько")
     mp.add_argument("--seconds", type=float, default=60.0, help="длина петли, с (по умолчанию 60)")
     mp.add_argument("--parallel", type=int, default=4, help="сколько записывать одновременно")
     mp.add_argument("--force", action="store_true", help="перезаписать уже записанные")
+    mp.add_argument("--takes", type=int, default=3, help="дублей на мелодию; остаётся самый спокойный")
     args = p.parse_args(argv)
 
     if args.cmd == "devices":
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             rep = make_pool(registry, seconds=args.seconds, parallel=args.parallel, only=args.only,
-                            force=args.force)
+                            force=args.force, takes=args.takes)
         except (KeyError, RuntimeError) as e:
             print(f"Ошибка: {e}")
             return 1
