@@ -16,158 +16,48 @@
 #                  (Stable Audio 2.5: POST /v2beta/audio/stable-audio-2/text-to-audio).
 #   suno         — без API, позже вручную.
 #
-# Промпты — из гайда «Промптинг Google Lyria для фоновой музыки в импров-театре» (17.10.2026),
-# раздел 5: один инструмент, одноголосная мелодия, «под диалог», без кульминаций.
-services: [lyria3, elevenlabs, stability]
+# Задания пересмотрены по исследованию промптинга (17.10.2026): речь живёт в 1–4 кГц, поэтому инструмент
+# звучит НИЖЕ или ВЫШЕ голоса (register), без «мелодии» — мотив из 2–4 нот с паузами или тянущиеся ноты
+# (motion), темп не выше 72. Текст промпта собирается из полей по гайду каждого сервиса (короткий, без длинных
+# списков «no …» — перечисление инструментов их и вызывает):
+#   lyria3       — «Instrumental. … Solo X …» + таймкоды [00:00]/[00:30] «так же тихо, без нарастания»;
+#   elevenlabs   — «Solo X in <тональность>, N BPM, …» + force_instrumental;
+#   stability    — «Format: Solo | Instruments: … | Moods: … | Style: … | BPM: N»;
+#   lyria_rt     — нынешний генератор (база для сравнения): тот же текст, config bpm, без барабанов.
+# Обработка у всех одинаковая: первые 60 с, вырез 2–5 кГц на 3 дБ (место для речи), громкость -24 LUFS.
+services: [lyria3, elevenlabs, stability, lyria_rt]
 variants: 2
 seconds: 60
 prompts:
-  - id: romance_tender
-    genre: romance
-    instrument: guitar
-    bpm: 72
-    text: >-
-      Create a tender romantic underscore for a live improvisational theatre dialogue scene. Exactly one solo
-      nylon-string acoustic guitar, gently fingerpicked, playing a sparse monophonic melody with short affectionate
-      phrases. 72 BPM, warm intimate tone, soft consistent dynamics. A small repeating motif with gentle pauses. No
-      chords, no accompaniment, no additional instruments, no percussion, no bass, no vocals, no ambience, no dramatic
-      builds. Unobtrusive, loop-friendly background music.
-  - id: heartbreak
-    genre: drama
-    instrument: piano
-    bpm: 62
-    text: >-
-      Create a quiet, heartbreaking theatrical underscore played by exactly one solo acoustic piano. A slow, simple,
-      descending monophonic melody with long pauses between notes, 62 BPM, soft touch, fragile and deeply melancholic
-      but restrained. Keep the dynamics even and low. No piano chords, no left-hand accompaniment, no other
-      instruments, no percussion, no vocals, no sound effects, no dramatic climax. A small repeating, loop-friendly
-      melodic idea beneath spoken dialogue.
-  - id: nostalgia
-    genre: underscore
-    instrument: kalimba
-    bpm: 76
-    text: >-
-      Create a gentle nostalgic underscore for spoken theatre using exactly one solo kalimba. Play a sparse, delicate,
-      slightly bittersweet monophonic melody, 76 BPM, like a distant happy memory. Short repeating motif, warm low-key
-      performance, generous silence between phrases, consistent quiet dynamics. No chords, accompaniment, other
-      instruments, percussion, vocals or ambient effects. No climax. Smooth loop-friendly background.
-  - id: loneliness
-    genre: drama
-    instrument: cello
-    bpm: 60
-    text: >-
-      Create a minimal lonely theatrical underscore using only one unaccompanied solo cello. Play a very sparse, slow,
-      expressive monophonic melody in a low register at 60 BPM, with sustained gentle notes and plenty of silence.
-      Restrained sadness without a crescendo. No layered strings, harmony, drones, accompaniment, percussion, vocals,
-      background textures or effects. Quiet and even from beginning to end, suited to a repeating dialogue background.
-  - id: suspicion
-    genre: noir
-    instrument: doublebass
-    bpm: 70
-    text: >-
-      Create a restrained suspense underscore for theatrical dialogue using exactly one solo upright double bass,
-      softly plucked pizzicato. A sparse repeating three-note monophonic motif in a low register, 70 BPM, subtle
-      uncertainty and suspicion. Maintain a low stable dynamic. No other instruments, no backing chords, no drones, no
-      percussion, no footsteps, no vocals, no cinematic hits or rising climax. Loop-friendly minimal background.
-  - id: psychological_tension
-    genre: thriller
-    instrument: cello
-    bpm: 64
-    text: >-
-      Create a minimalist psychological tension underscore with one unaccompanied solo cello only. A quiet, uneasy,
-      repeating four-note monophonic motif with slight dissonance and measured bowing, 64 BPM. Sustained unease, not
-      horror, with steady dynamics and no crescendo. No other strings, instruments, percussion, bass layers, vocals,
-      ambience or sound effects. Keep the sound understated for live spoken dialogue and looping.
-  - id: investigation
-    genre: noir
-    instrument: marimba
-    bpm: 88
-    text: >-
-      Create a playful but mysterious detective underscore for improvisational theatre. Only one solo marimba
-      performing a short, inquisitive, repeating monophonic melody at 88 BPM. Gentle mallet attacks, sparse rhythmic
-      gaps and subtle curiosity. Soft, steady volume without major changes. No other instruments, bass, percussion
-      layers, chords, vocals, ambience or climax. Minimal and loop-friendly under dialogue.
-  - id: looming_danger
-    genre: horror
-    instrument: piano
-    bpm: 60
-    text: >-
-      Create a quiet ominous theatre underscore using exactly one solo acoustic piano in its low register. Sparse
-      isolated monophonic notes forming a recurring four-note pattern, 60 BPM, with restrained unease and wide gaps.
-      Constant soft dynamic, no accelerando or dramatic build. No chords, left-hand bass accompaniment, additional
-      instruments, percussion, risers, sound effects, ambience or vocals. Smooth background suitable for looping.
-  - id: awkward_date
-    genre: comedy
-    instrument: ukulele
-    bpm: 92
-    text: >-
-      Create a light awkward-comedy underscore for a live dialogue scene using exactly one solo ukulele. Gently pluck a
-      quirky, sparse monophonic melody at 92 BPM, with tiny hesitations and playful short phrases. Keep it modest and
-      quiet rather than cheerful or busy. No strummed chords, backing instruments, percussion, bass, vocals, sound
-      effects or sudden comedy stings. Small repeating motif and steady dynamics, loop-friendly.
-  - id: silly_fuss
-    genre: comedy
-    instrument: clarinet
-    bpm: 116
-    text: >-
-      Create a whimsical silent-film-inspired theatrical underscore played by exactly one solo clarinet. A light,
-      slightly mischievous monophonic melody with short staccato notes, 116 BPM, playful but not frantic. A simple
-      repeating musical phrase with space for actors to speak, controlled quiet dynamics. No piano, orchestra,
-      percussion, bass, harmony, vocals or sound effects. No big endings, designed to loop.
-  - id: absurd_ceremony
-    genre: comedy
-    instrument: bassoon
-    bpm: 82
-    text: >-
-      Create a dry absurdist comedy underscore using exactly one unaccompanied solo bassoon. Play a pompous but
-      slightly clumsy monophonic melody with short detached notes, 82 BPM. Understated deadpan humor, repetitive
-      four-bar motif, soft consistent intensity. No other woodwinds, brass, strings, accompaniment, bass, percussion,
-      vocals or comedy sound effects. No crescendos or flourish endings. Loop-friendly background for dialogue.
-  - id: small_victory
-    genre: cartoon
-    instrument: glockenspiel
-    bpm: 94
-    text: >-
-      Create a tiny, charming, gently triumphant underscore for theatre using one solo glockenspiel only. A simple
-      sparse monophonic melody in a comfortable mid register, 94 BPM, cheerful and lightly playful without piercing
-      high notes. Short repeating phrases, consistent low dynamics and gentle mallet attacks. No additional
-      instruments, chords, percussion layers, bass, vocals, effects, dramatic fanfares or big ending. Suitable for a
-      quiet loop beneath speech.
-  - id: fantasy_journey
-    genre: fantasy
-    instrument: harp
-    bpm: 78
-    text: >-
-      Create a subtle medieval fantasy travel underscore for live improvisational theatre, performed by exactly one
-      solo harp. A delicate folk-inspired monophonic melody in a gentle modal scale, 78 BPM, evoking a wandering
-      storyteller. Sparse plucked notes, short recurring motif, restrained stable dynamics. No harp arpeggio
-      accompaniment, no other instruments, no percussion, drones, voices, ambience or cinematic swell. Loop-friendly
-      beneath spoken dialogue.
-  - id: western
-    genre: western
-    instrument: guitar
-    bpm: 84
-    text: >-
-      Create a restrained old-western underscore using exactly one dry solo acoustic guitar, plucking a sparse
-      monophonic frontier melody at 84 BPM. Dusty, slightly lonesome and understated, with a repeating motif and
-      pauses for dialogue. No strumming chords, bass, harmonica, whistling, drums, other instruments, vocals or
-      environmental sounds. No dramatic showdown climax, maintain steady quiet dynamics. Loop-friendly.
-  - id: noir_1940s
-    genre: noir
-    instrument: saxophone
-    bpm: 68
-    text: >-
-      Create a restrained 1940s film-noir jazz underscore using exactly one solo tenor saxophone. A slow smoky, sparse,
-      slightly melancholic monophonic melody at 68 BPM, with a few gentle blue notes and long breathing spaces.
-      Intimate and subdued, with steady soft dynamics. No piano, bass, drums, jazz trio, backing harmony, vocals, city
-      noises or dramatic solos. Simple repeating phrases suitable for quiet dialogue and looping.
-  - id: scifi
-    genre: scifi
-    instrument: synth
-    bpm: 72
-    text: >-
-      Create a minimalist retro science-fiction underscore using exactly one monophonic analog synthesizer with a soft
-      rounded tone. A sparse repeating five-note futuristic melody at 72 BPM, mysterious and weightless, with mild
-      sustained notes and low steady intensity. Only one synth voice, no synth pads, bassline, arpeggiator, drums,
-      other instruments, sound effects, ambient noise or vocals. No build or climax. Loop-friendly background beneath
-      spoken theatre.
+  - {id: romance_tender, title: Нежная романтика, genre: romance, instrument: "acoustic piano", register: "high register, single notes only",
+     motion: "a gentle three-note motif with long pauses", mood: "tender, warm, intimate", bpm: 66, key: D major}
+  - {id: heartbreak, title: Разбитое сердце, genre: drama, instrument: "cello", register: "low register",
+     motion: "long sustained bowed notes, slowly descending", mood: "heartbroken, melancholic, restrained", bpm: 60, key: D minor}
+  - {id: nostalgia, title: Ностальгия, genre: underscore, instrument: "kalimba", register: "high register",
+     motion: "a soft four-note motif with silences", mood: "nostalgic, bittersweet, gentle", bpm: 66, key: G major}
+  - {id: loneliness, title: Одиночество, genre: drama, instrument: "bowed double bass (arco)", register: "lowest register",
+     motion: "long held notes with silences", mood: "lonely, empty, quiet", bpm: 60, key: E minor}
+  - {id: suspicion, title: Подозрение, genre: noir, instrument: "upright double bass, pizzicato", register: "low register",
+     motion: "a sparse repeating three-note motif", mood: "suspicious, uncertain, understated", bpm: 64, key: A minor}
+  - {id: psychological_tension, title: Психологическое напряжение, genre: thriller, instrument: "violin", register: "very high register, soft harmonics",
+     motion: "long held quiet notes with slight dissonance", mood: "uneasy, tense, restrained", bpm: 60, key: C minor}
+  - {id: investigation, title: Расследование, genre: noir, instrument: "marimba", register: "low register, soft mallets",
+     motion: "a curious repeating four-note motif with gaps", mood: "mysterious, inquisitive, light", bpm: 72, key: E minor}
+  - {id: looming_danger, title: Надвигающаяся опасность, genre: horror, instrument: "acoustic piano", register: "lowest register, single notes only",
+     motion: "isolated notes with wide gaps", mood: "ominous, uneasy, quiet", bpm: 60, key: B minor}
+  - {id: awkward_date, title: Неловкое свидание, genre: comedy, instrument: "violin pizzicato", register: "high register",
+     motion: "hesitant short plucked phrases with pauses", mood: "awkward, quirky, shy", bpm: 70, key: F major}
+  - {id: silly_fuss, title: Смешная суета, genre: comedy, instrument: "clarinet", register: "low chalumeau register",
+     motion: "short playful staccato notes with rests", mood: "mischievous, light, playful", bpm: 72, key: B-flat major}
+  - {id: absurd_ceremony, title: Абсурдная церемония, genre: comedy, instrument: "bassoon", register: "low register",
+     motion: "pompous but clumsy short detached notes", mood: "deadpan, absurd, dry humor", bpm: 66, key: F major}
+  - {id: small_victory, title: Маленькая победа, genre: cartoon, instrument: "glockenspiel", register: "high register, soft mallets",
+     motion: "a short cheerful repeating phrase with rests", mood: "charming, gently triumphant", bpm: 72, key: C major}
+  - {id: fantasy_journey, title: Фэнтези-путешествие, genre: fantasy, instrument: "celtic harp", register: "high register",
+     motion: "a sparse plucked modal folk motif", mood: "wandering, storytelling, magical", bpm: 66, key: D dorian}
+  - {id: western, title: Вестерн, genre: western, instrument: "acoustic guitar", register: "low bass strings",
+     motion: "slow sparse plucked notes", mood: "dusty, lonesome, frontier", bpm: 64, key: E minor}
+  - {id: noir_1940s, title: Нуар 1940-х, genre: noir, instrument: "baritone saxophone", register: "low register, soft and breathy",
+     motion: "slow sparse phrases with long breaths", mood: "smoky, melancholic, 1940s film noir", bpm: 60, key: C minor}
+  - {id: scifi, title: Фантастика, genre: scifi, instrument: "theremin", register: "high register",
+     motion: "slow gliding long notes", mood: "mysterious, weightless, retro sci-fi", bpm: 66, key: A minor}
