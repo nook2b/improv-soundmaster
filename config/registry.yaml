@@ -152,15 +152,16 @@ music_vocabulary:
   pool_config: { bpm: 60, guidance: 5.0, temperature: 0.8 }
   pool_text: "minimal underscore beneath spoken theatre dialogue, lots of space between notes, soft steady dynamics, constant intensity, no dramatic builds, no climax, no sudden accents, a small repeating loop-friendly motif"
   genres:
-    underscore:  { label: "Нейтральный фон", text: "subtle unobtrusive cinematic background, simple sparse melody" }
+    underscore:  { label: "Нейтральный фон", text: "modern everyday background underscore, contemporary indie film feeling, unobtrusive, simple sparse melody" }
     drama:       { label: "Драма", text: "dramatic emotional film score feeling, expressive phrasing" }
     comedy:      { label: "Комедия", text: "quirky comedic tune, bouncy staccato phrases" }
     noir:        { label: "Нуар/детектив", text: "film noir detective jazz, smoky bluesy phrasing" }
-    thriller:    { label: "Триллер", text: "thriller suspense, repetitive ostinato, pulsing" }
+    # Без слова «thriller»: ElevenLabs принимает его за песню М. Джексона и отклоняет запрос.
+    thriller:    { label: "Триллер", text: "suspense film score, uneasy tension, repetitive ostinato, pulsing" }
     horror:      { label: "Ужасы", text: "horror film, creepy, dark, eerie dissonant intervals, unsettling tension, sparse" }
     romance:     { label: "Романтика", text: "romantic, warm lyrical melody" }
     western:     { label: "Вестерн", text: "spaghetti western, twangy, wide open desert feeling" }
-    action:      { label: "Экшн/погоня", text: "action chase, driving fast repeated notes, urgent" }
+    action:      { label: "Азарт/погоня", text: "action chase, driving fast repeated notes, urgent" }
     fantasy:     { label: "Сказка/фэнтези", text: "fairy tale fantasy, magical, whimsical" }
     scifi:       { label: "Фантастика", text: "science fiction, spacey arpeggios, otherworldly" }
     epic:        { label: "Эпос", text: "epic heroic grand melody, triumphant phrasing" }
@@ -210,7 +211,7 @@ music_vocabulary:
     flute:       { label: "флейта", text: "solo flute, soft breathy single line" }
     clarinet:    { label: "кларнет", text: "solo clarinet, soft single melodic line" }
     bassoon:     { label: "фагот", text: "solo bassoon, short detached notes" }
-    saxophone:   { label: "саксофон", text: "solo tenor saxophone, breathy single melodic line" }
+    saxophone:   { label: "саксофон", text: "solo saxophone, soft breathy low register, single melodic line" }
     trumpet:     { label: "труба", text: "solo muted trumpet, one single melodic line" }
     horn:        { label: "валторна", text: "solo French horn, warm noble single line" }
     marimba:     { label: "маримба/ксилофон", text: "solo marimba, soft mallets, gentle single notes" }
@@ -223,6 +224,9 @@ music_vocabulary:
     theremin:    { label: "терменвокс", text: "solo theremin, wavering eerie single line" }
     saw:         { label: "пила", text: "solo musical saw played with a bow, wavering eerie tone" }
     slideguitar: { label: "слайд-гитара", text: "solo dobro slide guitar, dusty single notes" }
+    rhodes:      { label: "электропиано", text: "solo Rhodes electric piano, warm mellow single notes" }
+    glockenspiel: { label: "колокольчики", text: "solo glockenspiel, soft mallets, light single notes" }
+    hurdygurdy:  { label: "колёсная лира", text: "solo hurdy-gurdy, medieval folk, gentle single melodic line" }
   # Темп шоу задан bpm в base_config; слова здесь — характер фраз (быстрее — значит подвижнее, а не гонка).
   tempo:
     slow:   { label: "медленно", text: "very slow, long sustained notes, unhurried" }
@@ -232,118 +236,107 @@ music_vocabulary:
 # Пул записанных мелодий: по 5 на жанр, у каждой свой инструмент (настроение/энергия/темп/инструмент).
 # Играют с ручных кнопок жанров на пульте (повторное нажатие — следующая, с плавным переходом) и
 # служат резервом, если генератор недоступен (нет интернета). Файлы — sounds/pool/<жанр>/<n>-<инструмент>.flac,
-# создаются командой `python -m soundmaster make-music-pool` (Lyria, нужен GEMINI_API_KEY). В git не кладутся.
+# создаются командой `python -m soundmaster make-music-pool` (ElevenLabs Music v2.5, ELEVENLABS_API_KEY;
+# `--engine lyria` — Lyria RealTime). В git не кладутся.
 music_pool:
-  # «настроение/энергия/темп/инструмент [| уточнение к промпту]». Раунд 3 (2026-10-17):
-  # оставленные на прослушке — без изменений; «мелодия хорошая, но медленнее» — новая запись, медленнее
-  # (замедлять готовую запись нельзя — звучит криво, решение Ивана);
-  # три мелодии «электроники» перенесены в нуар, триллер и фантастику (по оценке Ивана); остальной брак —
-  # новая запись по формуле гайда, со стереотипным для жанра инструментом.
+  # «настроение/энергия/темп/инструмент [| уточнение к промпту]». Раунд 4 (2026-10-21): ElevenLabs v2.5 по
+  # итогам слепого сравнения и исследования (docs/music-prompting.md): инструмент ниже или выше голоса,
+  # «тон и фактура» — тянущиеся ноты или мотив из 2–4 нот, петли по 30 с.
+  # 70% сцен — обычные современные, без особых эмоций (Иван), поэтому нейтральный фон — 15 разных
+  # инструментов в спокойном современном ключе; остальные жанры — по 4 настроения.
   underscore:
-    - calm/low/slow/piano | gentle calm, single soft notes with long pauses
-    - calm/low/slow/guitar
+    - calm/low/slow/piano | high register, soft single notes, contemporary and light
+    - calm/low/slow/guitar | clean fingerpicked harmonics, modern indie
+    - happy/low/medium/ukulele | easygoing everyday, light plucked notes with pauses
+    - calm/low/slow/electric | warm clean tone, soft reverb, unhurried modern
     - mysterious/low/slow/kalimba | quietly curious, distant
-    - nostalgic/low/slow/cello
-    - tender/low/medium/musicbox
+    - playful/low/medium/marimba | light everyday bounce, low register, soft mallets
+    - calm/low/slow/vibraphone | relaxed contemporary, soft mallets, long decay
+    - nostalgic/low/slow/rhodes | warm single notes, gentle and thoughtful
+    - tender/low/slow/harp | high register, delicate
+    - happy/low/medium/mandolin | light and friendly, soft plucked single notes
+    - calm/low/slow/cello | lowest register, long soft held notes
+    - playful/low/medium/pizzicato | light everyday curiosity, high register
+    - calm/low/slow/glockenspiel | soft, sparse, airy
+    - calm/low/slow/synth | soft warm analog tone, modern lo-fi feel, high register
+    - tender/low/slow/celesta | quiet and light, everyday warmth
   drama:
-    - tense/low/slow/cello
-    - sad/low/slow/piano | the same sad piano idea, even slower, very long pauses
-    - tense/low/slow/violin | restrained tension, one violin line only, no second violin, no accompaniment
-    - nostalgic/low/slow/guitar
-    - sad/low/slow/clarinet | slightly slower, long breaths between phrases
+    - sad/low/slow/cello | low register, long sustained bowed notes, slowly descending
+    - tender/low/slow/piano | high register, single notes with long pauses
+    - anxious/low/slow/violin | very high register, soft held harmonics
+    - nostalgic/low/slow/clarinet | low chalumeau register, soft and breathy, bittersweet
   comedy:
-    - playful/low/slow/ukulele | awkward comedy, tiny hesitations, short playful phrases
-    - absurd/low/slow/clarinet | whimsical silent-film comedy, light staccato, mischievous but not frantic
-    - playful/low/medium/marimba
-    - absurd/low/slow/bassoon | pompous but clumsy, dry deadpan humor
-    - playful/low/slow/pizzicato | sneaky tiptoeing comedy
+    - playful/low/medium/bassoon | low register, short detached notes, clumsy but gentle
+    - absurd/low/medium/clarinet | low register, short playful staccato with rests
+    - playful/low/slow/ukulele | hesitant short phrases, awkward pauses
+    - happy/low/medium/pizzicato | high register, light tiptoeing
   noir:
-    - mysterious/low/slow/saxophone | 1940s film noir, smoky blue notes, long breathing spaces, no piano, no bass, no drums
-    - tense/low/slow/trumpet | one muted trumpet only, distant, no other brass
-    - happy/medium/medium/synth
-    - ominous/low/slow/electric
-    - nostalgic/low/slow/clarinet
+    - mysterious/low/slow/saxophone | 1940s film noir, smoky blue notes, long breaths
+    - tense/low/slow/doublebass | low slow walking pizzicato, sparse
+    - nostalgic/low/slow/trumpet | muted, distant, smoky
+    - ominous/low/slow/vibraphone | dark, slow, long decay
   thriller:
-    - tense/medium/medium/synth
-    - calm/low/medium/synth
-    - ominous/low/slow/cello
-    - tense/medium/fast/violin
-    - mysterious/low/slow/electric
+    - anxious/low/slow/cello | low register, slow repeating two-note ostinato
+    - tense/low/slow/violin | very high register, quiet held harmonics, slight dissonance
+    - ominous/low/slow/synth | low soft pulse, cold
+    - mysterious/low/slow/piano | lowest register, isolated notes, wide gaps
   horror:
-    - ominous/low/slow/musicbox
-    - ominous/low/slow/cello
-    - anxious/low/slow/violin | creepy, eerie slow dissonant glissandi and harmonics, unsettling
-    - ominous/low/slow/piano | isolated low single notes, wide gaps, soft touch
-    - ominous/low/slow/saw | haunting, creepy
+    - ominous/low/slow/saw | wavering eerie long notes
+    - ominous/low/slow/piano | lowest register, isolated notes, wide gaps
+    - mysterious/low/slow/musicbox | creepy childlike lullaby, slightly detuned
+    - tense/low/slow/cello | low register, sul ponticello, whispering bow
   romance:
-    - tender/low/slow/piano | warm tender love theme, affectionate
-    - tender/low/slow/guitar
-    - nostalgic/low/slow/violin
-    - tender/low/slow/accordion | French cafe musette, slow romantic waltz feeling
-    - tender/low/slow/saxophone
+    - tender/low/slow/piano | high register, single notes, warm and intimate
+    - tender/low/slow/guitar | nylon strings, soft fingerpicked single notes
+    - nostalgic/low/slow/harp | high register, dreamy
+    - sad/low/slow/violin | high register, soft, parting
   western:
-    - tense/low/slow/harmonica
-    - calm/low/slow/guitar | dry dusty frontier melody, quiet, even volume, no loud plucks
-    - nostalgic/low/slow/slideguitar | lonesome old west
-    - tense/low/slow/electric | spaghetti western twangy guitar riff with tremolo, single notes
-    - nostalgic/low/slow/trumpet | one lonely distant trumpet only, no other brass
+    - sad/low/slow/harmonica | lonesome, single breathy notes, long pauses
+    - nostalgic/low/slow/slideguitar | sunset, dusty and slow
+    - tense/low/slow/guitar | low bass strings, sparse, before a showdown
+    - happy/low/medium/banjo | relaxed saloon, light plucked notes
   action:
-    - tense/high/fast/violin
-    - tense/high/fast/electric
-    - tense/medium/medium/cello | urgent staccato ostinato, quiet but driving
-    - triumphant/high/fast/trumpet
-    - tense/high/fast/synth
+    - tense/low/medium/cello | low register, steady repeating ostinato, chase
+    - anxious/low/medium/synth | low soft pulse, urgent but quiet
+    - playful/low/medium/pizzicato | hurried light plucked notes
+    - tense/low/medium/doublebass | low pizzicato, steady driving pulse
   fantasy:
-    - mysterious/low/slow/harp | delicate folk-inspired modal melody, wandering storyteller
-    - happy/low/medium/flute
-    - tender/low/slow/lute | medieval tavern, wandering storyteller
-    - playful/medium/medium/clarinet
-    - mysterious/low/slow/celesta | gentle fairy-tale magic, no accents
+    - calm/low/slow/lute | wandering travel, gentle plucked folk motif
+    - mysterious/low/slow/harp | high register, magical, sparse
+    - happy/low/medium/hurdygurdy | cosy tavern, gentle and friendly
+    - mysterious/low/slow/flute | wooden flute, low breathy register, ancient
   scifi:
-    - mysterious/low/slow/synth | very slow, long held notes, weightless
-    - tense/medium/medium/synth
-    - anxious/low/slow/theremin | 1950s science fiction
-    - nostalgic/low/slow/synth | weightless space, mysterious signal
-    - tense/medium/medium/synth
-  epic:
-    - triumphant/high/medium/trumpet
-    - triumphant/low/slow/horn | heroic, noble, restrained
-    - tense/low/slow/cello | grand but restrained, one cello only
-    - triumphant/low/slow/violin | heroic, noble, one violin only
-    - nostalgic/low/slow/flute | slightly slower, long breaths between phrases
+    - mysterious/low/slow/theremin | high register, slow gliding long notes
+    - calm/low/slow/synth | space, high soft sine tone, weightless
+    - anxious/low/slow/synth | cold technology, low quiet pulse
+    - calm/low/slow/celesta | wonder, high and sparse
   cartoon:
-    - playful/medium/fast/marimba
-    - absurd/low/slow/clarinet | silly cartoon, light staccato, unhurried
-    - playful/low/slow/ukulele | cartoon, gently plucked, tiny pauses
-    - absurd/low/slow/harmonica | funny wobbly cartoon tune, unhurried, long pauses
-    - absurd/low/slow/bassoon | clumsy cartoon tiptoeing
+    - playful/low/medium/glockenspiel | light cheerful phrase with rests
+    - mysterious/low/slow/pizzicato | sneaking, tiptoeing
+    - happy/low/medium/marimba | bouncy, soft mallets
+    - absurd/low/medium/clarinet | low register, silly staccato
   lounge:
-    - calm/low/slow/piano | late-night bar, even slower, very long pauses
-    - calm/low/medium/saxophone
-    - calm/low/slow/guitar | clean hollow-body jazz guitar, soft single notes, cool jazz
-    - nostalgic/low/slow/trumpet | late-night bar, even slower, long breaths
-    - calm/low/slow/vibraphone | cool jazz lounge, mellow
+    - calm/low/slow/piano | relaxed jazz, single notes, high register
+    - tender/low/slow/vibraphone | soft late-night jazz, long decay
+    - nostalgic/low/slow/saxophone | low register, soft and breathy, late evening
+    - calm/low/slow/doublebass | slow relaxed walking pizzicato
   period:
-    - calm/low/slow/harpsichord | courtly, even slower, long pauses
-    - tender/low/slow/violin
-    - happy/low/slow/flute | courtly dance feeling but slow and unhurried
-    - nostalgic/low/slow/cello | even slower, long held notes
-    - calm/low/slow/harp
+    - happy/low/medium/harpsichord | courtly reception, light minuet motif
+    - mysterious/low/slow/lute | palace intrigue, sparse
+    - sad/low/slow/violin | baroque lament, high register, soft
+    - triumphant/low/slow/horn | solemn, distant, soft
   folk:
-    - happy/low/slow/accordion | gentle village tune, unhurried
-    - nostalgic/low/slow/guitar
-    - playful/low/slow/mandolin | gentle village dance, unhurried
-    - happy/low/slow/balalaika | slow Russian folk song
-    - tender/low/slow/violin
+    - happy/low/medium/accordion | cheerful village, soft bellows
+    - playful/low/medium/balalaika | sly and light
+    - sad/low/slow/accordion | wistful longing, slow
+    - calm/low/slow/mandolin | cosy, soft tremolo
+  epic:
+    - triumphant/low/slow/horn | noble, distant, soft
+    - sad/low/slow/cello | loss, low register, long held notes
+    - tense/low/slow/cello | before the battle, low steady ostinato
+    - nostalgic/low/slow/flute | ancient oath, low breathy register
   electronic:
-    - happy/low/medium/synth | club-style hypnotic repeating synth riff, deep house feeling
-    - calm/low/medium/synth | chill electronic lounge synth lead
-    - playful/low/medium/synth | playful bleepy electro synth riff
-    - mysterious/low/slow/synth | dark minimal techno synth riff
-    - tense/low/medium/synth | pulsing electronic sequence feeling
-  sport:
-    - triumphant/low/medium/electric | stadium rock anthem guitar riff, confident, not rushed
-    - triumphant/low/medium/trumpet | sports fanfare motif, one trumpet only
-    - tense/low/medium/synth | competitive pulsing synth riff
-    - happy/low/medium/horn | proud victorious horn call
-    - triumphant/low/medium/violin | heroic, one violin only
+    - calm/low/medium/synth | late night, soft
+    - mysterious/low/medium/synth | cold, hypnotic
+    - happy/low/medium/synth | gentle drive
+    - nostalgic/low/medium/synth | dreamy

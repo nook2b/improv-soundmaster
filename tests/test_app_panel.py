@@ -172,7 +172,7 @@ def test_panel_genre_button_plays_pool(tmp_path):
     try:
         lib = app.describe_library()
         noir = next(g for g in lib["pool"] if g["genre"] == "noir")
-        assert noir["available"] == noir["total"] == 5
+        assert noir["available"] == noir["total"] == len(app.registry.pool["noir"])
         assert next(g for g in lib["pool"] if g["genre"] == "folk")["available"] == 0
         assert handle_command(app, {"cmd": "pool", "genre": "noir"})["result"] in ("pool", "pool_loading")
         t0 = time.time()
@@ -181,7 +181,7 @@ def test_panel_genre_button_plays_pool(tmp_path):
             app.controller.tick()
             time.sleep(0.02)
         cur = app.status()["music"]["active"]["music"]
-        assert cur["state"] == "pool:noir/1" and "1/5" in cur["label"]
+        assert cur["state"] == "pool:noir/1" and f"1/{noir['total']}" in cur["label"]
         assert handle_command(app, {"cmd": "pool", "genre": "folk"})["result"] == "no_pool"
     finally:
         app.stop()

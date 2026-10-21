@@ -235,11 +235,14 @@ def test_generator_gap_is_bridged_not_fallen_back(system, clock):
 
 
 def test_pool_spec_is_solo_and_varied(registry):
-    assert len(registry.pool) == len(registry.vocabulary.genres)
+    assert len(registry.pool) >= len(registry.vocabulary.genres) - 1  # без пула — резерв из нейтрального
     for genre, tracks in registry.pool.items():
-        assert len(tracks) == 5
+        assert len(tracks) >= 4
         assert all(t.style.instrument != "auto" and t.style.genre == genre for t in tracks)
-    varied = [g for g, ts in registry.pool.items() if len({t.style.instrument for t in ts}) >= 4]
+    # 70% сцен — обычные современные: нейтральный фон больше остальных и на разных инструментах
+    neutral = registry.pool["underscore"]
+    assert len(neutral) >= 12 and len({t.style.instrument for t in neutral}) == len(neutral)
+    varied = [g for g, ts in registry.pool.items() if len({t.style.instrument for t in ts}) >= 3]
     assert len(varied) >= len(registry.pool) - 3  # почти везде в жанре разные инструменты
 
 
@@ -265,11 +268,48 @@ def test_make_loop_is_seamless_and_pool_is_written(registry, tmp_path):
         return np.tile(x, (int(seconds // 10) + 2, 1))
 
     rep = mp.make_pool(reg, seconds=3, parallel=2, only="folk", progress=lambda s: None, recorder=fake)
-    assert len(rep.made) == 5 and not rep.errors
-    assert (tmp_path / "pool/folk/4-balalaika.flac").exists()
+    assert len(rep.made) == len(reg.pool["folk"]) and not rep.errors
+    assert (tmp_path / "pool/folk/2-balalaika.flac").exists()
     assert any("balalaika" in p["text"] for p in calls[0]["prompts"] + [p for c in calls for p in c["prompts"]])
-    again = mp.make_pool(reg, seconds=3, only="folk/4", progress=lambda s: None, recorder=fake)
-    assert again.skipped == ["pool/folk/4-balalaika.flac"] and not again.made
+    again = mp.make_pool(reg, seconds=3, only="folk/2", progress=lambda s: None, recorder=fake)
+    assert again.skipped == ["pool/folk/2-balalaika.flac"] and not again.made
+
+
+def test_pool_elevenlabs_plan_and_stop_on_fatal(registry, tmp_path):
+    import shutil
+    from dataclasses import replace
+
+    from soundmaster.music import pool as mp
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    noir = registry.pool["noir"][0]
+    c = mp.eleven_plan(registry, noir, 34.5)["chunks"][0]
+    assert c["duration_ms"] == 34500 and "66 BPM" in c["positive_styles"]
+    assert any("saxophone" in x for x in c["positive_styles"])
+    assert not any(x.lower().startswith("no ") for x in c["positive_styles"])  # запреты — только отдельно
+    assert {"drums", "vocals", "chords", "crescendo"} <= set(c["negative_styles"])
+    club = mp.eleven_plan(registry, registry.pool["electronic"][0], 10)["chunks"][0]
+    assert "drums" not in club["negative_styles"] and "hi-hats" in club["negative_styles"]
+    assert "100 BPM" in " ".join(club["positive_styles"]) or "110 BPM" in " ".join(club["positive_styles"])
+
+    reg = replace(registry, sounds_dir=tmp_path)
+    sr = mp.SR
+    x = (np.random.default_rng(1).standard_normal((int(40 * sr), 2)) * 0.05).astype(np.float32)
+    plans = []
+
+    async def fake(plan, key):
+        plans.append(plan)
+        if len(plans) > 2:
+            raise mp.ElevenFatal("ElevenLabs 401: quota_exceeded")
+        return x
+
+    rep = mp.make_pool(reg, seconds=3, parallel=1, only="underscore", progress=lambda s: None,
+                       recorder=fake, takes=1, engine="elevenlabs")
+    assert len(rep.made) == 2 and len(plans) == 3  # после «кредиты кончились» больше не просим
+    assert len(rep.errors) == len(reg.pool["underscore"]) - 2
+    meta = (tmp_path / reg.pool["underscore"][0].file).with_suffix(".json").read_text(encoding="utf-8")
+    assert "music_v2_5" in meta and "composition_plan" in meta
 
 
 def _fake_pool(registry, genre, sr=SR):
@@ -297,7 +337,7 @@ def test_pool_button_plays_next_track_with_crossfade(system, registry):
     _wait(c.music, lambda: "music" in c.music.active)
     cur = c.music.active["music"]
     assert cur.state.id == "pool:folk/1" and cur.source == "file" and cur.owner == "manual"
-    assert "балалайка" not in cur.state.label and "1/5" in cur.state.label
+    assert "балалайка" not in cur.state.label and "1/4" in cur.state.label
     first_voice = cur.voice_id
     for _ in range(SR // 256):
         mixer.render(256)  # первая успела зазвучать
@@ -306,7 +346,7 @@ def test_pool_button_plays_next_track_with_crossfade(system, registry):
     mixer.render(64)
     old = next(v for v in mixer.voices if v.id == first_voice)
     assert old.stopping and old.env_step < 1.0 / 64  # уходит плавно, а не обрывается
-    for _ in range(4):
+    for _ in range(len(registry.pool["folk"]) - 1):
         c.manual_pool("folk")
         c.music.tick()
     _wait(c.music, lambda: c.music.active["music"].state.id == "pool:folk/1")  # по кругу
@@ -329,7 +369,7 @@ def test_pool_is_reserve_when_generator_is_down(system, registry, clock):
     _wait(c.music, lambda: c.music.channel_source("music") == "file")
     cur = c.music.active["music"]
     assert cur.state.id == f"style:{style.id}"  # для модели это её выбор — не «перевыбирает»
-    assert cur.state.file == "pool/folk/4-balalaika.flac"  # тот же инструмент из пула
+    assert cur.state.file == "pool/folk/2-balalaika.flac"  # тот же инструмент из пула
     assert any(r.get("action") == "pool_fallback" for r in journal.records)
 
 
@@ -381,7 +421,7 @@ def test_select_several(registry):
     from soundmaster.music.pool import select
 
     got = select(registry, "noir/2, folk")
-    assert [f"{t.style.genre}/{t.n}" for t in got] == ["noir/2"] + [f"folk/{n}" for n in range(1, 6)]
+    assert [f"{t.style.genre}/{t.n}" for t in got] == ["noir/2"] + [f"folk/{n}" for n in range(1, 5)]
 
 
 def test_pool_spec_extra_and_genre_beat(tmp_path):

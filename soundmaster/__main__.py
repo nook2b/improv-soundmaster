@@ -6,7 +6,7 @@
   python -m soundmaster check          — проверить конфигурацию и файлы
   python -m soundmaster make-test-sounds — создать тестовые звуки для всех файлов реестра
   python -m soundmaster import-sounds ПАПКА — взять звуки (mp3, mp4, wav …) по именам id из реестра
-  python -m soundmaster make-music-pool — записать мелодии для кнопок жанров и резерва без интернета (Lyria)
+  python -m soundmaster make-music-pool — записать мелодии для кнопок жанров и резерва без интернета (ElevenLabs)
   python -m soundmaster replay ЗАПИСЬ.mp4 — прогнать запись через систему (теневой режим) + отчёт
   python -m soundmaster cameras        — список камер (имя для config: video.camera)
 """
@@ -56,12 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("folder", help="папка с файлами: doorbell.mp3, rain.mp4 …")
     im.add_argument("--force", action="store_true", help="перезаписать существующие (в т. ч. тестовые) файлы")
     mp = sub.add_parser("make-music-pool",
-                        help="записать мелодии пула (кнопки жанров и резерв без интернета) через Lyria")
+                        help="записать мелодии пула (кнопки жанров и резерв без интернета)")
     mp.add_argument("--only", help="только жанр (noir) или мелодия (noir/2); через запятую — несколько")
-    mp.add_argument("--seconds", type=float, default=60.0, help="длина петли, с (по умолчанию 60)")
-    mp.add_argument("--parallel", type=int, default=4, help="сколько записывать одновременно")
+    mp.add_argument("--engine", choices=["elevenlabs", "lyria"], default="elevenlabs",
+                    help="генератор: elevenlabs (ELEVENLABS_API_KEY, по умолчанию) или lyria (GEMINI_API_KEY)")
+    mp.add_argument("--seconds", type=float, help="длина петли, с (elevenlabs — 30, lyria — 60)")
+    mp.add_argument("--parallel", type=int, help="сколько записывать одновременно (elevenlabs — 2, lyria — 4)")
     mp.add_argument("--force", action="store_true", help="перезаписать уже записанные")
-    mp.add_argument("--takes", type=int, default=3, help="дублей на мелодию; остаётся самый спокойный")
+    mp.add_argument("--takes", type=int, help="дублей на мелодию, остаётся самый спокойный (elevenlabs — 1, lyria — 3)")
     args = p.parse_args(argv)
 
     if args.cmd == "devices":
@@ -148,8 +150,10 @@ def main(argv: list[str] | None = None) -> int:
         from .music.pool import make_pool
 
         try:
-            rep = make_pool(registry, seconds=args.seconds, parallel=args.parallel, only=args.only,
-                            force=args.force, takes=args.takes)
+            eleven = args.engine == "elevenlabs"
+            rep = make_pool(registry, seconds=args.seconds or (30.0 if eleven else 60.0),
+                            parallel=args.parallel or (2 if eleven else 4), only=args.only, force=args.force,
+                            takes=args.takes or (1 if eleven else 3), engine=args.engine)
         except (KeyError, RuntimeError) as e:
             print(f"Ошибка: {e}")
             return 1
