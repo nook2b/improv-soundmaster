@@ -180,3 +180,34 @@ def test_carry_labels_to_new_candidates(tmp_path):
     carry_labels(tmp_path, "v", new, msgs.append)
     assert load_labels(tmp_path) == {"v_000118": "cut", "v_000505": "no", "other_1": "no"}
     assert any("1:31" in m for m in msgs)  # монтаж, не прошедший новый отбор, назван
+
+
+def test_manual_montage_is_cut_and_labeled(tmp_path):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    from soundmaster.learn.collect import H, W, process
+    from soundmaster.learn.label import load_labels, load_manual, save_label, save_manual
+
+    video = tmp_path / "show.mp4"
+    _moving_box_video(video, seconds=16, cross_at=8.0)
+
+    def tiny_people(rgb, t):  # фигура слишком мелкая для автоматического отбора
+        cols = np.nonzero((rgb[..., 0] > 128).any(axis=0))[0]
+        if len(cols) < 5:
+            return {}
+        x = (cols[0] + cols[-1]) / 2 / W
+        return {1: (x - 0.03, 0.75, x + 0.03, 0.95)}
+
+    data = tmp_path / "data"
+    save_manual(data, "vid2", 8.7)
+    save_manual(data, "vid2", 30.0)
+    save_manual(data, "vid2", 30.0, remove=True)
+    assert load_manual(data) == {"vid2": [8.7]}
+    r = process(str(video), "vid2", "Компот", data, tmp_path / "clips", tiny_people,
+                progress=lambda s: None, manual=[8.7])
+    assert r["manual"] == [8.7]
+    c = next(c for c in r["candidates"] if "manual" in c["sources"])
+    assert c["t_start"] <= 8.7 <= c["t_pass_end"] + 2
+    assert load_labels(data)[c["id"]] == "cut"  # ручная отметка — сразу «монтаж»
+    save_label(data, c["id"], "cut_other")
+    assert load_labels(data)[c["id"]] == "cut_other"

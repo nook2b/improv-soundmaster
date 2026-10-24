@@ -157,10 +157,31 @@ def write_clip(path: Path, imgs: list[np.ndarray], fps: float) -> None:
     tmp.replace(path)
 
 
+def manual_candidate(tm: float, log: list[tuple[float, dict[int, Box]]]) -> PassCandidate:
+    """Монтаж, который Иван отметил вручную (время в записи): берём крупную фигуру, прошедшую дальше всех рядом."""
+    tracks: dict[int, list[tuple[float, float]]] = {}
+    for lt, bx in log:
+        if tm - 4.0 <= lt <= tm + 4.0:
+            for k, b in bx.items():
+                if b[3] - b[1] >= 0.3:
+                    tracks.setdefault(k, []).append((lt, (b[0] + b[2]) / 2))
+    best = max(((max(x for _, x in p) - min(x for _, x in p), k, p) for k, p in tracks.items() if len(p) >= 3),
+               default=None)
+    if best is None:
+        return PassCandidate(tm - 1.0, tm + 1.0, -1, 0.0, 0.0, ["manual"])
+    span, k, pts = best
+    return PassCandidate(pts[0][0], pts[-1][0], k, span, 0.0, ["manual"])
+
+
 def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, detector: Callable,
             fps: float = 10.0, detect_every: int = 2, progress: Callable[[str], None] = print,
-            duration: float = 0.0) -> dict:
-    """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json."""
+            duration: float = 0.0, manual: list[float] | None = None) -> dict:
+    """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json.
+
+    manual — моменты (секунды записи), которые Иван отметил как пропущенный монтаж: по ним ролик
+    нарезается всегда, без отбора, и сразу получает метку «монтаж».
+    """
+    manual_q = sorted(manual or [])
     ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (WIDE_BEFORE + AFTER + 14)))
     log: deque[tuple[float, dict[int, Box]]] = deque(
         maxlen=int(fps / detect_every * (BEFORE + AFTER + MAX_CLIP + 10)))
@@ -174,7 +195,8 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
         nonlocal skipped
         window = [(lt, bx) for lt, bx in log if c.t_start - BEFORE <= lt <= c.t_end + AFTER]
         feats = pass_features(c.track, c.sources, window, c.t_start, c.t_end, BEFORE, AFTER)
-        if c.track < 0 or not is_scenecut_candidate(feats):
+        forced = "manual" in c.sources
+        if not forced and (c.track < 0 or not is_scenecut_candidate(feats)):
             skipped += 1
             return
         end = pass_end(c.track, window, c.t_end)
@@ -218,6 +240,17 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             boxes = detector(rgb, t)
             log.append((t, boxes))
             pending += finder.push(t, boxes)
+        while manual_q and t >= manual_q[0] + AFTER:
+            tm = manual_q.pop(0)
+            hit = next((d for d in done if d["t_clip"] - 2 <= tm <= d["t_pass_end"] + 2), None)
+            near = [c for c in pending if c.t_start - 2 <= tm <= c.t_end + 2]
+            if hit:
+                hit["sources"] = sorted(set(hit["sources"]) | {"manual"})
+            elif near:
+                for c in near:
+                    c.sources = sorted(set(c.sources) | {"manual"})
+            else:
+                finish(manual_candidate(tm, list(log)))
         if pending:
             pending = merge(pending)
             for c in [c for c in pending if t >= c.t_end + AFTER]:
@@ -231,12 +264,22 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
                      f"скорость ×{speed:.1f}{left}")
     for c in merge(pending):
         finish(c)
+    for tm in manual_q:  # отмечено у самого конца записи
+        if tm <= t:
+            finish(manual_candidate(tm, list(log)))
     result = {"video": vid, "title": title, "version": VERSION, "detector": getattr(detector, "name", ""),
               "source": source if is_url(source) else Path(source).name, "seconds": round(t, 1), "fps": fps,
               "detect_fps": fps / detect_every, "size": [W, H], "made": time.strftime("%Y-%m-%d %H:%M"),
-              "skipped": skipped, "candidates": done}
+              "skipped": skipped, "manual": sorted(manual or []), "candidates": done}
     out_dir.mkdir(parents=True, exist_ok=True)
     carry_labels(out_dir, vid, done, progress)
+    from .label import load_labels, save_labels
+
+    labels = load_labels(out_dir)
+    marked = [c["id"] for c in done if "manual" in c["sources"] and labels.get(c["id"]) not in ("cut", "cut_other")]
+    if marked:
+        labels.update({cid: "cut" for cid in marked})
+        save_labels(out_dir, labels)
     # ролики прошлых сборов этого видео больше не нужны — не копим их на диске
     keep = {c["clip"] for c in done} | {c["clip_wide"] for c in done if c.get("clip_wide")}
     for old in clip_dir.glob(f"{vid}_*.mp4"):
@@ -301,14 +344,20 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
     items = ordered(items)
     if only_shows:
         items = [e for e in items if is_show(e["title"])]
+    from .label import load_manual
+
+    manual = load_manual(out_dir)
+
     def ready(e: dict) -> bool:
         p = out_dir / f"{e['id']}.json"
         if not p.exists():
             return False
         try:
-            return json.loads(p.read_text(encoding="utf-8")).get("version", 1) >= VERSION
+            d = json.loads(p.read_text(encoding="utf-8"))
         except ValueError:
             return False
+        # новые ручные отметки пропущенных монтажей — видео собирается заново
+        return d.get("version", 1) >= VERSION and set(manual.get(e["id"], [])) <= set(d.get("manual", []))
 
     todo = [e for e in items if not ready(e)]
     ready = len(items) - len(todo)
@@ -321,6 +370,7 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
         progress(f"[{n}/{len(todo)}] {e['title']}")
         try:
             r = process(e["url"], e["id"], e["title"], out_dir, clip_dir, make(), fps=fps, progress=progress,
+                        manual=manual.get(e["id"], []),
                         duration=e["duration"])
         except Exception as ex:  # noqa: BLE001 — одно видео не должно останавливать остальные
             progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]}")
