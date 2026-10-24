@@ -98,6 +98,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,
 h1{font-size:20px;margin:4px 0}.muted{color:var(--muted)}
 video{width:100%;background:#000;border-radius:10px;aspect-ratio:16/9}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--fg);max-width:100%}
 button{font:inherit;padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .cut[aria-pressed=true]{background:var(--cut);color:#fff;border-color:var(--cut)}
@@ -119,12 +120,18 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 <span class="grow"></span>
 <button id="bPrev">← Назад</button><button id="bNext">Дальше →</button>
 </div>
-<label class="muted"><input type="checkbox" id="skip" checked> Показывать только неразмеченные</label>
+<div class="row"><label class="muted" for="vid">Видео:</label><select id="vid"><option value="">все</option></select>
+<label class="muted"><input type="checkbox" id="skip" checked> Показывать только неразмеченные</label></div>
 <p class="muted">Пробел — пауза, <kbd>←</kbd> <kbd>→</kbd> — листать. Отметка сохраняется сразу; можно закрыть и продолжить позже.</p>
 </div><script>
-let items=[],labels={},i=0;const $=id=>document.getElementById(id),v=$("v");
-async function load(){const r=await fetch("/api/items");const d=await r.json();items=d.items;labels=d.labels;
+let all=[],items=[],labels={},i=0;const $=id=>document.getElementById(id),v=$("v");
+function videos(){const sel=$("vid"),cur=sel.value,seen=new Map();all.forEach(x=>{const s=seen.get(x.video)||{title:x.title,n:0,done:0};
+ s.n++;if(labels[x.id])s.done++;seen.set(x.video,s)});sel.innerHTML='<option value="">все видео</option>'+
+ [...seen].map(([k,s])=>`<option value="${k}">${s.title.replace(/</g,"&lt;")} — ${s.done}/${s.n}</option>`).join("");sel.value=cur}
+function filter(){const f=$("vid").value;items=f?all.filter(x=>x.video===f):all}
+async function load(){const r=await fetch("/api/items");const d=await r.json();all=d.items;labels=d.labels;videos();filter();
  i=Math.max(0,items.findIndex(x=>!labels[x.id]));show()}
+$("vid").onchange=()=>{filter();i=Math.max(0,items.findIndex(x=>!labels[x.id]));show()};
 function show(){if(!items.length){$("pos").textContent="Пока нет роликов — сбор ещё идёт";return}
  i=(i+items.length)%items.length;const it=items[i];$("pos").textContent=`${i+1} / ${items.length}`;
  $("title").textContent=`${it.title} · ${Math.floor(it.t/60)}:${String(Math.floor(it.t%60)).padStart(2,"0")}`;
@@ -136,14 +143,14 @@ function step(d){if(!items.length)return;const only=$("skip").checked;for(let k=
  if(!only||!labels[items[i].id])break}show()}
 async function mark(l){const it=items[i];if(!it)return;const cur=labels[it.id];const nl=cur===l?null:l;
  const r=await fetch("/api/label",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:it.id,label:nl})});
- if(!r.ok){alert("Не сохранилось");return}if(nl)labels[it.id]=nl;else delete labels[it.id];show();if(nl)setTimeout(()=>step(1),150)}
+ if(!r.ok){alert("Не сохранилось");return}if(nl)labels[it.id]=nl;else delete labels[it.id];videos();show();if(nl)setTimeout(()=>step(1),150)}
 $("bCut").onclick=()=>mark("cut");$("bNo").onclick=()=>mark("no");$("bUnsure").onclick=()=>mark("unsure");
 $("bPrev").onclick=()=>{i--;show()};$("bNext").onclick=()=>{i++;show()};
 document.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
  if(e.key==="1")mark("cut");else if(e.key==="2")mark("no");else if(e.key==="3")mark("unsure");
  else if(e.key==="ArrowRight"){i++;show()}else if(e.key==="ArrowLeft"){i--;show()}
  else if(e.key===" "){e.preventDefault();v.paused?v.play():v.pause()}});
-setInterval(async()=>{const r=await fetch("/api/items");const d=await r.json();if(d.items.length!==items.length){const cur=items[i]&&items[i].id;
- items=d.items;labels=d.labels;const j=items.findIndex(x=>x.id===cur);i=j<0?i:j;show()}},20000);
+setInterval(async()=>{const r=await fetch("/api/items");const d=await r.json();if(d.items.length!==all.length){const cur=items[i]&&items[i].id;
+ all=d.items;labels=d.labels;videos();filter();const j=items.findIndex(x=>x.id===cur);i=j<0?i:j;show()}},20000);
 load();
 </script></body></html>"""
