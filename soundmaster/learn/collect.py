@@ -237,6 +237,11 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
               "skipped": skipped, "candidates": done}
     out_dir.mkdir(parents=True, exist_ok=True)
     carry_labels(out_dir, vid, done, progress)
+    # ролики прошлых сборов этого видео больше не нужны — не копим их на диске
+    keep = {c["clip"] for c in done} | {c["clip_wide"] for c in done if c.get("clip_wide")}
+    for old in clip_dir.glob(f"{vid}_*.mp4"):
+        if old.name not in keep:
+            old.unlink(missing_ok=True)
     tmp = out_dir / f"{vid}.json.tmp"
     tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     tmp.replace(out_dir / f"{vid}.json")

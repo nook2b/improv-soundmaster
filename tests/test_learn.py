@@ -86,8 +86,13 @@ def test_process_video_writes_clip_and_boxes(tmp_path):
             return {}
         return {1: (cols[0] / W, rows[0] / H, cols[-1] / W, rows[-1] / H)}
 
+    (tmp_path / "clips").mkdir()
+    (tmp_path / "clips" / "vid1_000001.mp4").write_bytes(b"old")  # ролик прошлого сбора
+    (tmp_path / "clips" / "other_000001.mp4").write_bytes(b"keep")  # другое видео — не трогаем
     r = process(str(video), "vid1", "Компот — тест", tmp_path / "data", tmp_path / "clips", fake_people,
                 progress=lambda s: None)
+    assert not (tmp_path / "clips" / "vid1_000001.mp4").exists()
+    assert (tmp_path / "clips" / "other_000001.mp4").exists()
     assert len(r["candidates"]) == 1
     c = r["candidates"][0]
     assert 3.0 <= c["t_start"] <= 5.5 and "people" in c["sources"] and c["track"] == 1
