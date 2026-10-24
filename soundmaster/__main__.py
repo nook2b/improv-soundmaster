@@ -64,7 +64,37 @@ def main(argv: list[str] | None = None) -> int:
     mp.add_argument("--parallel", type=int, help="сколько записывать одновременно (elevenlabs — 2, lyria — 4)")
     mp.add_argument("--force", action="store_true", help="перезаписать уже записанные")
     mp.add_argument("--takes", type=int, help="дублей на мелодию, остаётся самый спокойный (elevenlabs — 1, lyria — 3)")
+    cs = sub.add_parser("collect-scenecuts",
+                        help="собрать примеры «монтажа» с записей (плейлист/ссылка/файл) для обучения детектора")
+    cs.add_argument("sources", nargs="+", help="ссылка на плейлист или видео YouTube, или файлы записей")
+    cs.add_argument("--limit", type=int, help="сколько видео пройти за этот запуск")
+    cs.add_argument("--only-shows", action="store_true", help="только шоу (в названии «Компот» или «шоу»)")
+    cs.add_argument("--out", default="data/scenecut", help="куда писать рамки людей (в git)")
+    cs.add_argument("--clips", default="recordings/scenecut_clips", help="куда писать ролики (не в git)")
+    ls_ = sub.add_parser("label-scenecuts", help="разметить собранные ролики «монтаж / не монтаж» в браузере")
+    ls_.add_argument("--out", default="data/scenecut")
+    ls_.add_argument("--clips", default="recordings/scenecut_clips")
+    ls_.add_argument("--port", type=int, default=8766)
     args = p.parse_args(argv)
+
+    if args.cmd == "collect-scenecuts":
+        from .learn.collect import collect
+
+        try:
+            res = collect(args.sources, Path(args.out), Path(args.clips), limit=args.limit,
+                          only_shows=args.only_shows)
+        except (RuntimeError, ImportError) as e:
+            print(f"Ошибка: {e}")
+            return 1
+        print(f"Готово: видео {len(res)}, кандидатов {sum(len(r['candidates']) for r in res)}. "
+              "Разметка: python -m soundmaster label-scenecuts")
+        return 0
+
+    if args.cmd == "label-scenecuts":
+        from .learn.label import serve
+
+        serve(Path(args.out), Path(args.clips), port=args.port)
+        return 0
 
     if args.cmd == "devices":
         from .audio.devices import list_devices

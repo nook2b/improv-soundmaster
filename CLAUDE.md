@@ -36,6 +36,7 @@
 | `music/` | Источник музыки: файлы или генератор (test_tone, lyria_realtime) с резервом; `pool.py` — запись пула мелодий (ElevenLabs или Lyria). |
 | `media/vad.py`, `media/asr.py` | Нарезка речи на фразы (принудительный разрез длинной речи), распознавание (mlx / faster / scripted), фильтр «галлюцинаций» Whisper. |
 | `media/scenecut.py` | Детектор «монтажа» по кадрам. |
+| `learn/` | Обучение детектора «монтажа»: `collect.py` — сбор примеров с YouTube без сохранения видео (YOLO + `FastTracker`, кандидаты «прошёл поперёк кадра» из `passes.py`), `label.py` — локальная страница разметки. Рамки и разметка — `data/scenecut/` (в git), ролики — `recordings/` (нет). |
 | `media/ffmpeg.py`, `media/download.py` | Чтение файлов и камеры (avfoundation) через ffmpeg; скачивание по ссылке через yt-dlp. |
 | `fastrules.py` | Слова-подводки/триггеры с отрицаниями и отменами. |
 | `brain/` | Инструкция модели, схемы ответа, адаптеры OpenAI/Gemini (HTTP), планировщик запросов, бюджет. |
@@ -52,6 +53,8 @@ python -m soundmaster make-test-sounds             # тестовые звуки
 python -m soundmaster make-music-pool [--only noir/2 --force]  # пул сольных мелодий (ElevenLabs) → sounds/pool/
 python -m soundmaster run [--input mac-mic|brio-mic] [--null-audio]
 python -m soundmaster replay ЗАПИСЬ.mp4|ССЫЛКА --asr mlx [--brain openai|gemini] [--max-seconds N] [--fast]
+python -m soundmaster collect-scenecuts ПЛЕЙЛИСТ [--only-shows] [--limit N]  # примеры «монтажа» (YOLO) → data/scenecut/
+python -m soundmaster label-scenecuts             # разметка роликов в браузере → data/scenecut/labels.json
 python -m soundmaster devices | cameras | check
 ```
 
@@ -71,6 +74,11 @@ python -m soundmaster devices | cameras | check
 
 0. Прослушка нового пула (ElevenLabs, раунд 4), перенос на Mac. Для живой Lyria RealTime — применить выводы
    `docs/music-prompting.md`: инструмент и настроение отдельными weighted prompts, инструменты из списка Google.
+0а. **Детектор «монтажа» на нейросети** (решение Ивана, 2026-10-24, вариант «люди в кадре»): Иван собирает
+   примеры на Windows из плейлиста YouTube «Компот импров» (83 видео, ~115 ч; 9 шоу «Компот» сняты с одного
+   ракурса без склеек, на занятиях тоже бывает «монтаж»; исходников нет — только YouTube, из облака YouTube
+   не отдаёт видео), размечает, присылает `data/scenecut/`. Дальше: признаки траекторий → небольшая модель
+   (проверка на площадке, которой не было в обучении) → детектор в `media/` рядом со старым, первые шоу — SUGGEST.
 1. Прогнать реальные записи (`replay`) на Mac с `--asr mlx`, затем с `--brain`; по отчётам настроить
    инструкцию модели (`brain/prompt.py`), правила, пороги VAD и «монтажа».
 2. Эталонная разметка записей (`required / acceptable / forbidden`) и автоматический подсчёт точности/полноты.

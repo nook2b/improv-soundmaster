@@ -281,6 +281,40 @@ python -m soundmaster make-music-pool --engine lyria  # записать Lyria R
 Ключи API не храните в файлах репозитория. Бесплатные тарифы Gemini могут использовать присланные
 данные для обучения.
 
+## Обучение детектора «монтажа» на записях
+
+Чтобы «монтаж» узнавался надёжнее и на новой площадке, детектор учится на ваших записях.
+Видео идёт с YouTube прямо в анализ и **на диск не сохраняется**: нейросеть (YOLO) находит людей
+в кадре, и там, где кто-то крупный быстро прошёл поперёк кадра, остаются короткий ролик для
+разметки (`recordings/scenecut_clips/`, в git не попадает) и рамки людей
+(`data/scenecut/<видео>.json` — только числа, без картинок, в git).
+
+Установка на Windows (PowerShell; после winget откройте терминал заново):
+
+```powershell
+winget install yt-dlp.yt-dlp Gyan.FFmpeg DenoLand.Deno
+cd improv-soundmaster
+git pull
+py -m pip install -e ".[learn]"
+```
+
+На Mac: `brew install yt-dlp ffmpeg deno` и `pip install -e ".[learn]"`. Deno нужен yt-dlp для YouTube.
+
+```powershell
+py -m soundmaster collect-scenecuts "https://youtube.com/playlist?list=..." --only-shows   # сначала шоу
+py -m soundmaster collect-scenecuts "https://youtube.com/playlist?list=..." --limit 10     # потом занятия
+py -m soundmaster label-scenecuts        # разметка в браузере: 1 — монтаж, 2 — нет, 3 — непонятно
+```
+
+Сбор можно прервать (Ctrl+C) и продолжить той же командой — готовые видео пропускаются. Разметку
+можно делать, пока сбор идёт. Когда закончите — отправьте рамки и разметку:
+
+```powershell
+git add data/scenecut
+git commit -m "Разметка монтажа"
+git push
+```
+
 ## Разработка
 
 ```bash

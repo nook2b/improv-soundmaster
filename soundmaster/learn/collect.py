@@ -1,0 +1,255 @@
+"""Сбор примеров «монтажа» с записей (YouTube-плейлист, ссылка или файл) — без сохранения видео.
+
+Видео идёт с YouTube прямо в анализ (yt-dlp → ffmpeg → кадры в памяти) и на диск не пишется.
+По кадрам нейросеть находит людей (YOLO) и ведёт их траектории; там, где кто-то крупный быстро
+прошёл поперёк кадра (или сработал старый детектор по пикселям с мягкими порогами), сохраняются:
+  - короткий ролик (несколько секунд, без звука) — для разметки, в recordings/ (в git не попадает);
+  - рамки людей вокруг этого момента — в data/scenecut/<id видео>.json (числа, без картинок; в git).
+На этих рамках и разметке потом учится модель «монтаж / не монтаж».
+
+    python -m soundmaster collect-scenecuts "https://youtube.com/playlist?list=..."
+
+Нужно: yt-dlp (+ deno для YouTube), ffmpeg, `pip install -e ".[learn]"` (ultralytics).
+Прерванный сбор можно продолжить той же командой: готовые видео пропускаются.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+from collections import deque
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable, Iterator
+
+import numpy as np
+
+from ..media.download import is_url
+from ..media.ffmpeg import ffmpeg_bin
+from ..media.scenecut import SceneCutConfig, SceneCutDetector
+from .passes import Box, FastTracker, PassCandidate, PassFinder, merge
+
+W, H = 640, 360  # размер кадров для анализа и роликов
+PRE, POST = 1.5, 3.0  # секунд до начала и после конца прохода в ролике
+MAX_CLIP = 10.0
+# Старый детектор по пикселям — с мягкими порогами, только чтобы не пропустить кандидатов.
+LOOSE_PIXEL = SceneCutConfig(min_height=0.2, min_travel=0.35, max_duration=6.0, min_monotonic=0.7, cooldown=2.0)
+
+
+def ytdlp_bin() -> str:
+    path = shutil.which("yt-dlp")
+    if not path:
+        raise RuntimeError("нужен yt-dlp (Windows: winget install yt-dlp.yt-dlp; Mac: brew install yt-dlp)")
+    return path
+
+
+def playlist(url: str) -> list[dict]:
+    """Видео плейлиста (или одно видео): [{id, title, duration, url}]."""
+    out = subprocess.run([ytdlp_bin(), "--flat-playlist", "-J", url], capture_output=True, text=True,
+                         encoding="utf-8")
+    if out.returncode != 0:
+        raise RuntimeError(f"yt-dlp не прочитал {url}: {out.stderr.strip()[-300:]}")
+    data = json.loads(out.stdout)
+    entries = data.get("entries") or [data]
+    return [{"id": e["id"], "title": e.get("title") or "", "duration": e.get("duration") or 0,
+             "url": e.get("url") or e.get("webpage_url") or f"https://www.youtube.com/watch?v={e['id']}"}
+            for e in entries if e.get("id")]
+
+
+def is_show(title: str) -> bool:
+    t = title.lower()
+    return "компот" in t or "шоу" in t
+
+
+def ordered(entries: list[dict]) -> list[dict]:
+    """Сначала шоу (так будет на площадке), потом занятия — в порядке плейлиста (новые первыми)."""
+    return sorted(entries, key=lambda e: not is_show(e["title"]))
+
+
+def frames(source: str, fps: float) -> Iterator[tuple[float, np.ndarray]]:
+    """Кадры W×H RGB с частотой fps: из ссылки (поток, без файла на диске) или из файла."""
+    vf = (f"fps={fps},scale={W}:{H}:force_original_aspect_ratio=decrease,"
+          f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2")
+    ff = [ffmpeg_bin(), "-v", "error", "-i", "pipe:0" if is_url(source) else source, "-an",
+          "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    procs = []
+    if is_url(source):
+        # только видео (без звука), не выше 480p: для анализа хватает, трафика меньше
+        yt = subprocess.Popen([ytdlp_bin(), "-q", "--no-warnings", "--no-playlist", "-f",
+                               "bv*[height<=480][vcodec^=avc1]/bv*[height<=480]/b[height<=480]/b",
+                               "-o", "-", source], stdout=subprocess.PIPE)
+        procs.append(yt)
+        ffp = subprocess.Popen(ff, stdin=yt.stdout, stdout=subprocess.PIPE)
+        assert yt.stdout is not None
+        yt.stdout.close()  # чтобы yt-dlp узнал, если ffmpeg закончит раньше
+    else:
+        ffp = subprocess.Popen(ff, stdout=subprocess.PIPE)
+    procs.append(ffp)
+    assert ffp.stdout is not None
+    size = W * H * 3
+    i = 0
+    try:
+        while True:
+            raw = ffp.stdout.read(size)
+            if len(raw) < size:
+                break
+            yield i / fps, np.frombuffer(raw, np.uint8).reshape(H, W, 3)
+            i += 1
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+
+
+_MODELS: dict[str, object] = {}
+
+
+class YoloPeople:
+    """Люди в кадре с id траекторий: YOLO находит рамки, FastTracker связывает их между кадрами.
+
+    Один объект — одно видео (траектории не переходят между записями); нейросеть грузится один раз.
+    """
+
+    def __init__(self, model: str = "yolo11n.pt", imgsz: int = 416, conf: float = 0.3):
+        if model not in _MODELS:
+            from ultralytics import YOLO  # type: ignore
+
+            _MODELS[model] = YOLO(model)
+        self.model = _MODELS[model]
+        self.imgsz, self.conf = imgsz, conf
+        self.tracker = FastTracker()
+
+    def __call__(self, rgb: np.ndarray, t: float) -> dict[int, Box]:
+        r = self.model.predict(rgb[..., ::-1], classes=[0], imgsz=self.imgsz, conf=self.conf,  # type: ignore[attr-defined]
+                               verbose=False)[0]
+        dets = [tuple(float(v) for v in b) for b in r.boxes.xyxyn.cpu().numpy()] if r.boxes is not None else []
+        return self.tracker.update(t, dets)  # type: ignore[arg-type]
+
+
+def draw_box(rgb: np.ndarray, box: Box, color=(255, 220, 0), t: int = 2) -> np.ndarray:
+    out = rgb.copy()
+    x1, y1, x2, y2 = (int(round(v * s)) for v, s in zip(box, (W, H, W, H)))
+    x1, x2 = max(0, min(W - 1, x1)), max(0, min(W - 1, x2))
+    y1, y2 = max(0, min(H - 1, y1)), max(0, min(H - 1, y2))
+    out[y1:y1 + t, x1:x2 + 1] = color
+    out[max(0, y2 - t + 1):y2 + 1, x1:x2 + 1] = color
+    out[y1:y2 + 1, x1:x1 + t] = color
+    out[y1:y2 + 1, max(0, x2 - t + 1):x2 + 1] = color
+    return out
+
+
+def write_clip(path: Path, imgs: list[np.ndarray], fps: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.stem + ".tmp.mp4")
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+                    "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp)],
+                   input=b"".join(np.ascontiguousarray(f).tobytes() for f in imgs), check=True,
+                   capture_output=True)
+    tmp.replace(path)
+
+
+def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, detector: Callable,
+            fps: float = 10.0, detect_every: int = 2, progress: Callable[[str], None] = print,
+            duration: float = 0.0) -> dict:
+    """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json."""
+    ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (MAX_CLIP + 2)))
+    log: deque[tuple[float, dict[int, Box]]] = deque(maxlen=int(fps / detect_every * (MAX_CLIP + 6)))
+    finder, pixel = PassFinder(), SceneCutDetector(LOOSE_PIXEL)
+    pending: list[PassCandidate] = []
+    done: list[dict] = []
+    t0, t, last_report = time.monotonic(), 0.0, 0.0
+
+    def finish(c: PassCandidate) -> None:
+        b = c.t_end + POST
+        a = max(c.t_start - PRE, b - MAX_CLIP)
+        cid = f"{vid}_{int(a * 10):06d}"
+        boxes_at = [(lt, bx) for lt, bx in log if a - 1.0 <= lt <= b]
+        imgs = []
+        for ft, img in ring:
+            if a <= ft <= b:
+                if c.track >= 0 and boxes_at:
+                    near = min(boxes_at, key=lambda p: abs(p[0] - ft))
+                    if abs(near[0] - ft) < 0.5 and c.track in near[1]:
+                        img = draw_box(img, near[1][c.track])
+                imgs.append(img)
+        if len(imgs) < fps:  # начало видео — ролик слишком короткий
+            return
+        write_clip(clip_dir / f"{cid}.mp4", imgs, fps)
+        done.append({"id": cid, "clip": f"{cid}.mp4", "t_clip": round(a, 2), **{
+            k: (round(v, 3) if isinstance(v, float) else v) for k, v in asdict(c).items()},
+            "frames": [[round(lt, 2), {str(k): [round(v, 3) for v in bx] for k, bx in bxs.items()}]
+                       for lt, bxs in boxes_at]})
+
+    for i, (t, rgb) in enumerate(frames(source, fps)):
+        ring.append((t, rgb))
+        ev = pixel.push(t, rgb)
+        if ev:
+            pending.append(PassCandidate(ev.t_start, ev.t, -1, ev.travel, ev.height, ["pixel"]))
+        if i % detect_every == 0:
+            boxes = detector(rgb, t)
+            log.append((t, boxes))
+            pending += finder.push(t, boxes)
+        if pending:
+            pending = merge(pending)
+            for c in [c for c in pending if t >= c.t_end + POST]:
+                pending.remove(c)
+                finish(c)
+        if t - last_report >= 300:
+            last_report = t
+            speed = t / max(1e-6, time.monotonic() - t0)
+            left = f", осталось ~{(duration - t) / speed / 60:.0f} мин" if duration else ""
+            progress(f"  {title[:40]}: {t / 60:.0f} мин, кандидатов {len(done)}, скорость ×{speed:.1f}{left}")
+    for c in merge(pending):
+        finish(c)
+    result = {"video": vid, "title": title, "source": source if is_url(source) else Path(source).name,
+              "seconds": round(t, 1), "fps": fps, "detect_fps": fps / detect_every, "size": [W, H],
+              "made": time.strftime("%Y-%m-%d %H:%M"), "candidates": done}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out_dir / f"{vid}.json.tmp"
+    tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(out_dir / f"{vid}.json")
+    return result
+
+
+def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None = None, only_shows: bool = False,
+            fps: float = 10.0, progress: Callable[[str], None] = print,
+            detector_factory: Callable[[], Callable] | None = None) -> list[dict]:
+    """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются."""
+    ffmpeg_bin()
+    make = detector_factory or YoloPeople
+    items: list[dict] = []
+    for s in sources:
+        if is_url(s):
+            items += playlist(s)
+        else:
+            p = Path(s)
+            items.append({"id": p.stem, "title": p.name, "duration": 0, "url": str(p)})
+    items = ordered(items)
+    if only_shows:
+        items = [e for e in items if is_show(e["title"])]
+    todo = [e for e in items if not (out_dir / f"{e['id']}.json").exists()]
+    ready = len(items) - len(todo)
+    if limit is not None:
+        todo = todo[:limit]
+    progress(f"Видео: {len(items)}, уже собрано: {ready}, сейчас: {len(todo)} "
+             f"(~{sum(e['duration'] for e in todo) / 3600:.0f} ч записи)")
+    results = []
+    for n, e in enumerate(todo, 1):
+        progress(f"[{n}/{len(todo)}] {e['title']}")
+        try:
+            r = process(e["url"], e["id"], e["title"], out_dir, clip_dir, make(), fps=fps, progress=progress,
+                        duration=e["duration"])
+        except Exception as ex:  # noqa: BLE001 — одно видео не должно останавливать остальные
+            progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]}")
+            continue
+        if r["seconds"] < 0.5 * e["duration"]:
+            progress(f"  поток оборвался на {r['seconds'] / 60:.0f} мин из {e['duration'] / 60:.0f} — "
+                     "видео будет пройдено заново при следующем запуске")
+            (out_dir / f"{e['id']}.json").unlink()
+            continue
+        progress(f"  готово: кандидатов {len(r['candidates'])}")
+        results.append(r)
+    return results
