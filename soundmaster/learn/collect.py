@@ -32,9 +32,11 @@ from ..media.scenecut import SceneCutConfig, SceneCutDetector
 from .passes import Box, FastTracker, PassCandidate, PassFinder, is_scenecut_candidate, merge, pass_end, pass_features
 
 W, H = 640, 360  # размер кадров для анализа и роликов
-VERSION = 2  # версия отбора: данные старой версии собираются заново (разметка переносится по времени)
+VERSION = 3  # версия отбора/роликов: данные старой версии собираются заново (разметка переносится по времени)
 BEFORE, AFTER = 3.0, 7.0  # сколько секунд до и после прохода смотреть, кто стоит на сцене
-MAX_CLIP = 6.0  # ролик для разметки: ~5 с вокруг прохода (Иван: 8 с — много)
+MAX_CLIP = 7.0  # ролик для разметки: ~5–7 с, с момента, как человек появился в кадре (Иван: 8 с — много)
+WIDE_BEFORE = 5.0  # «Шире» на странице разметки: столько секунд до прохода и AFTER после —
+# видно, вышел ли человек из-за кулис и ушли ли потом актёры
 # Старый детектор по пикселям — с мягкими порогами, только чтобы не пропустить кандидатов.
 LOOSE_PIXEL = SceneCutConfig(min_height=0.2, min_travel=0.35, max_duration=6.0, min_monotonic=0.7, cooldown=2.0)
 
@@ -159,7 +161,7 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             fps: float = 10.0, detect_every: int = 2, progress: Callable[[str], None] = print,
             duration: float = 0.0) -> dict:
     """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json."""
-    ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (MAX_CLIP + AFTER + 4)))
+    ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (WIDE_BEFORE + AFTER + 14)))
     log: deque[tuple[float, dict[int, Box]]] = deque(
         maxlen=int(fps / detect_every * (BEFORE + AFTER + MAX_CLIP + 10)))
     finder, pixel = PassFinder(), SceneCutDetector(LOOSE_PIXEL)
@@ -176,20 +178,31 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             skipped += 1
             return
         end = pass_end(c.track, window, c.t_end)
-        a = max(c.t_start - 1.5, c.t_end - 3.5)  # t_end — момент, когда фигура прошла заметную часть кадра
-        b = min(max(end + 1.5, a + 5.0), a + MAX_CLIP)  # ~5 с: проход целиком и немного после
+        seen = first_seen(c.track, list(log), c.t_start)
+        a = min(seen, c.t_start) - 1.0  # с момента, как человек появился (вышел из-за кулис)
+        b = min(max(end + 1.5, a + 5.0), a + MAX_CLIP)
         cid = f"{vid}_{int(c.t_start * 10):06d}"
-        imgs = []
-        for ft, img in ring:
-            if a <= ft <= b:
-                near = min(window, key=lambda p: abs(p[0] - ft)) if window else None
-                if near and abs(near[0] - ft) < 0.5 and c.track in near[1]:
-                    img = draw_box(img, near[1][c.track])
-                imgs.append(img)
+        boxes = list(log)
+
+        def shots(a: float, b: float) -> list[np.ndarray]:
+            imgs = []
+            for ft, img in ring:
+                if a <= ft <= b:
+                    near = min(boxes, key=lambda p: abs(p[0] - ft)) if boxes else None
+                    if near and abs(near[0] - ft) < 0.5 and c.track in near[1]:
+                        img = draw_box(img, near[1][c.track])
+                    imgs.append(img)
+            return imgs
+
+        imgs = shots(a, b)
         if len(imgs) < fps:  # начало видео — ролик слишком короткий
             return
         write_clip(clip_dir / f"{cid}.mp4", imgs, fps)
-        done.append({"id": cid, "clip": f"{cid}.mp4", "t_clip": round(a, 2), "t_pass_end": round(end, 2),
+        wide = shots(c.t_start - WIDE_BEFORE, c.t_end + AFTER)
+        if len(wide) > len(imgs):
+            write_clip(clip_dir / f"{cid}_wide.mp4", wide, fps)
+        done.append({"id": cid, "clip": f"{cid}.mp4", "clip_wide": f"{cid}_wide.mp4" if len(wide) > len(imgs) else None,
+                     "t_clip": round(a, 2), "t_seen": round(seen, 2), "t_pass_end": round(end, 2),
                      **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in asdict(c).items()},
                      "features": {k: round(float(v), 3) for k, v in feats.items()},
                      "frames": [[round(lt, 2), {str(k): [round(v, 3) for v in bx] for k, bx in bxs.items()
@@ -228,6 +241,18 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     tmp.replace(out_dir / f"{vid}.json")
     return result
+
+
+def first_seen(track: int, log: list[tuple[float, dict[int, Box]]], t_start: float, limit: float = 4.0) -> float:
+    """Когда этот человек появился в кадре: идём назад от начала прохода, пока он виден (не дальше limit с)."""
+    seen = t_start
+    for lt, bx in reversed(log):
+        if lt > t_start:
+            continue
+        if track not in bx or t_start - lt > limit:
+            break
+        seen = lt
+    return seen
 
 
 def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[str], None] = print) -> None:

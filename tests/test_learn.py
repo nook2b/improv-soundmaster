@@ -92,6 +92,8 @@ def test_process_video_writes_clip_and_boxes(tmp_path):
     c = r["candidates"][0]
     assert 3.0 <= c["t_start"] <= 5.5 and "people" in c["sources"] and c["track"] == 1
     assert (tmp_path / "clips" / c["clip"]).stat().st_size > 1000
+    assert c["t_clip"] <= c["t_seen"] - 0.5  # ролик начинается до того, как человек появился в кадре
+    assert c["clip_wide"] and (tmp_path / "clips" / c["clip_wide"]).exists()  # «Шире» — с запасом до и после
     assert c["frames"] and all("1" in bx or not bx for _, bx in c["frames"])
     saved = json.loads((tmp_path / "data" / "vid1.json").read_text(encoding="utf-8"))
     assert saved["candidates"][0]["id"] == c["id"] and saved["seconds"] > 10

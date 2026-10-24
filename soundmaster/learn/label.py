@@ -22,8 +22,8 @@ def load_items(data_dir: Path) -> list[dict]:
             continue
         d = json.loads(p.read_text(encoding="utf-8"))
         for c in d.get("candidates", []):
-            items.append({"id": c["id"], "clip": c["clip"], "video": d["video"], "title": d["title"],
-                          "t": c["t_start"], "sources": c.get("sources", [])})
+            items.append({"id": c["id"], "clip": c["clip"], "wide": c.get("clip_wide"), "video": d["video"],
+                          "title": d["title"], "t": c.get("t_clip", c["t_start"]), "sources": c.get("sources", [])})
     return items
 
 
@@ -107,13 +107,15 @@ button{font:inherit;padding:10px 16px;border-radius:10px;border:1px solid var(--
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .cut[aria-pressed=true]{background:var(--cut);color:#fff;border-color:var(--cut)}
 .no[aria-pressed=true]{background:var(--no);color:#fff;border-color:var(--no)}
+#bWide[aria-pressed=true],#bSlow[aria-pressed=true]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .unsure[aria-pressed=true]{background:var(--unsure);color:#fff;border-color:var(--unsure)}
 .grow{flex:1}kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 4px}
 .bar{height:6px;background:var(--line);border-radius:3px}.bar i{display:block;height:100%;background:var(--accent);border-radius:3px;width:0}
 </style></head><body><div class="wrap">
 <h1>Разметка «монтажа»</h1>
 <p class="muted">«Монтаж» — актёр проходит перед сценой, чтобы начать новую сцену. Жёлтая рамка — человек, на которого
-среагировала программа (если рамки нет — сработал детектор по картинке). Ролик повторяется по кругу.</p>
+среагировала программа. Ролик повторяется по кругу. Непонятно, откуда человек вышел и что было после, — «Шире»:
+5 секунд до прохода и 7 после.</p>
 <div class="row"><b id="pos"></b><span class="muted" id="title"></span><span class="grow"></span><span id="stat" class="muted"></span></div>
 <div class="bar"><i id="prog"></i></div>
 <video id="v" autoplay muted loop playsinline></video>
@@ -122,13 +124,14 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 <button class="no" id="bNo">Не монтаж <kbd>2</kbd></button>
 <button class="unsure" id="bUnsure">Непонятно <kbd>3</kbd></button>
 <span class="grow"></span>
+<button id="bWide" aria-pressed="false">Шире <kbd>4</kbd></button><button id="bSlow" aria-pressed="false">Медленно <kbd>5</kbd></button>
 <button id="bPrev">← Назад</button><button id="bNext">Дальше →</button>
 </div>
 <div class="row"><label class="muted" for="vid">Видео:</label><select id="vid"><option value="">все</option></select>
 <label class="muted"><input type="checkbox" id="skip" checked> Показывать только неразмеченные</label></div>
 <p class="muted">Пробел — пауза, <kbd>←</kbd> <kbd>→</kbd> — листать. Отметка сохраняется сразу; можно закрыть и продолжить позже.</p>
 </div><script>
-let all=[],items=[],labels={},i=0;const $=id=>document.getElementById(id),v=$("v");
+let all=[],items=[],labels={},i=0,wide=false;const $=id=>document.getElementById(id),v=$("v");
 function videos(){const sel=$("vid"),cur=sel.value,seen=new Map();all.forEach(x=>{const s=seen.get(x.video)||{title:x.title,n:0,done:0};
  s.n++;if(labels[x.id])s.done++;seen.set(x.video,s)});sel.innerHTML='<option value="">все видео</option>'+
  [...seen].map(([k,s])=>`<option value="${k}">${s.title.replace(/</g,"&lt;")} — ${s.done}/${s.n}</option>`).join("");sel.value=cur}
@@ -139,7 +142,8 @@ $("vid").onchange=()=>{filter();i=Math.max(0,items.findIndex(x=>!labels[x.id]));
 function show(){if(!items.length){$("pos").textContent="Пока нет роликов — сбор ещё идёт";return}
  i=(i+items.length)%items.length;const it=items[i];$("pos").textContent=`${i+1} / ${items.length}`;
  $("title").textContent=`${it.title} · ${Math.floor(it.t/60)}:${String(Math.floor(it.t%60)).padStart(2,"0")}`;
- if(!v.src.endsWith(it.clip)){v.src="/clips/"+it.clip;v.play().catch(()=>{})}
+ const clip=wide&&it.wide?it.wide:it.clip;if(!v.src.endsWith(clip)){v.src="/clips/"+clip;v.playbackRate=$("bSlow").getAttribute("aria-pressed")==="true"?0.5:1;v.play().catch(()=>{})}
+ $("bWide").disabled=!it.wide;$("bWide").setAttribute("aria-pressed",wide&&!!it.wide);
  const l=labels[it.id];[["bCut","cut"],["bNo","no"],["bUnsure","unsure"]].forEach(([b,k])=>$(b).setAttribute("aria-pressed",l===k));
  const n=Object.keys(labels).filter(k=>items.some(x=>x.id===k)).length;$("stat").textContent=`размечено ${n} из ${items.length}`;
  $("prog").style.width=(n/items.length*100)+"%"}
@@ -149,9 +153,12 @@ async function mark(l){const it=items[i];if(!it)return;const cur=labels[it.id];c
  const r=await fetch("/api/label",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:it.id,label:nl})});
  if(!r.ok){alert("Не сохранилось");return}if(nl)labels[it.id]=nl;else delete labels[it.id];videos();show();if(nl)setTimeout(()=>step(1),150)}
 $("bCut").onclick=()=>mark("cut");$("bNo").onclick=()=>mark("no");$("bUnsure").onclick=()=>mark("unsure");
+function toggleWide(){wide=!wide;show()}
+function toggleSlow(){const b=$("bSlow"),on=b.getAttribute("aria-pressed")!=="true";b.setAttribute("aria-pressed",on);v.playbackRate=on?0.5:1}
+$("bWide").onclick=toggleWide;$("bSlow").onclick=toggleSlow;
 $("bPrev").onclick=()=>{i--;show()};$("bNext").onclick=()=>{i++;show()};
 document.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
- if(e.key==="1")mark("cut");else if(e.key==="2")mark("no");else if(e.key==="3")mark("unsure");
+ if(e.key==="1")mark("cut");else if(e.key==="2")mark("no");else if(e.key==="3")mark("unsure");else if(e.key==="4")toggleWide();else if(e.key==="5")toggleSlow();
  else if(e.key==="ArrowRight"){i++;show()}else if(e.key==="ArrowLeft"){i--;show()}
  else if(e.key===" "){e.preventDefault();v.paused?v.play():v.pause()}});
 setInterval(async()=>{const r=await fetch("/api/items");const d=await r.json();if(d.items.length!==all.length){const cur=items[i]&&items[i].id;
