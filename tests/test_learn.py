@@ -115,7 +115,8 @@ def test_collect_skips_done_and_orders_shows_first(tmp_path, monkeypatch):
         return {"seconds": 100, "candidates": []}
 
     monkeypatch.setattr(col, "process", fake_process)
-    (tmp_path / "a.json").write_text("{}", encoding="utf-8")  # уже собрано раньше
+    (tmp_path / "a.json").write_text('{"version": %d}' % col.VERSION, encoding="utf-8")  # уже собрано раньше
+    (tmp_path / "c.json").write_text('{"version": 1}', encoding="utf-8")  # старый отбор — собрать заново
     col.collect(["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips",
                 progress=lambda s: None, detector_factory=lambda: None)
     assert seen == ["b", "c"]
@@ -134,3 +135,41 @@ def test_labels_saved_and_listed(tmp_path):
     assert load_labels(tmp_path) == {}
     with pytest.raises(ValueError):
         save_label(tmp_path, "v_000040", "maybe")
+
+
+def _scene(t, runner_x=None, actors=(0.3, 0.6)):
+    b = {i + 1: (x - 0.06, 0.25, x + 0.06, 0.9) for i, x in enumerate(actors)}
+    if runner_x is not None:
+        b[9] = (runner_x - 0.08, 0.15, runner_x + 0.08, 0.95)
+    return (t, b)
+
+
+def test_pass_features_see_actors_leave():
+    from soundmaster.learn.passes import is_scenecut_candidate, pass_features
+
+    before = [_scene(t / 5) for t in range(0, 15)]  # 0–3 с: двое на сцене
+    run = [_scene(3 + k * 0.2, 0.05 + 0.15 * k) for k in range(7)]  # 3–4,2 с: проход через весь кадр
+    left = before + run + [_scene(4.4 + t / 5, actors=()) for t in range(0, 40)]  # потом сцена пуста
+    stay = before + run + [_scene(4.4 + t / 5) for t in range(0, 40)]  # потом те же стоят там же
+    f = pass_features(9, ["people"], left, 3.0, 4.2)
+    assert f["moved"] == 1.0 and f["span"] > 0.8 and f["height"] > 0.7 and is_scenecut_candidate(f)
+    g = pass_features(9, ["people"], stay, 3.0, 4.2)
+    assert g["moved"] == 0.0 and not is_scenecut_candidate(g)  # правило Ивана: остались — не монтаж
+    assert is_scenecut_candidate(pass_features(9, ["people", "pixel"], stay, 3.0, 4.2))  # если видит и пиксельный
+    audience = [(t, {5: (x - 0.06, 0.7, x + 0.06, 1.0)}) for t, x in [(k * 0.2, 0.1 + 0.15 * k) for k in range(6)]]
+    assert not is_scenecut_candidate(pass_features(5, ["people", "pixel"], audience, 0.0, 1.0))  # голова зрителя
+
+
+def test_carry_labels_to_new_candidates(tmp_path):
+    from soundmaster.learn.collect import carry_labels
+    from soundmaster.learn.label import load_labels, save_labels
+
+    (tmp_path / "v.json").write_text(json.dumps({"candidates": [
+        {"id": "v_000100", "t_start": 11.5, "t_end": 13.0}, {"id": "v_000500", "t_start": 51.0, "t_end": 52.0},
+        {"id": "v_000900", "t_start": 91.0, "t_end": 92.0}]}), encoding="utf-8")
+    save_labels(tmp_path, {"v_000100": "cut", "v_000500": "no", "v_000900": "cut", "other_1": "no"})
+    new = [{"id": "v_000118", "t_start": 11.8, "t_pass_end": 13.5}, {"id": "v_000505", "t_start": 50.5, "t_pass_end": 52.0}]
+    msgs = []
+    carry_labels(tmp_path, "v", new, msgs.append)
+    assert load_labels(tmp_path) == {"v_000118": "cut", "v_000505": "no", "other_1": "no"}
+    assert any("1:31" in m for m in msgs)  # монтаж, не прошедший новый отбор, назван

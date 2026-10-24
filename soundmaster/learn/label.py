@@ -32,6 +32,13 @@ def load_labels(data_dir: Path) -> dict[str, str]:
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
+def save_labels(data_dir: Path, labels: dict[str, str]) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    tmp = data_dir / "labels.json.tmp"
+    tmp.write_text(json.dumps(dict(sorted(labels.items())), ensure_ascii=False, indent=0), encoding="utf-8")
+    tmp.replace(data_dir / "labels.json")
+
+
 def save_label(data_dir: Path, cid: str, label: str | None) -> dict[str, str]:
     labels = load_labels(data_dir)
     if label is None:
@@ -40,10 +47,7 @@ def save_label(data_dir: Path, cid: str, label: str | None) -> dict[str, str]:
         if label not in LABELS:
             raise ValueError(f"метка {label!r}: нужна одна из {LABELS}")
         labels[cid] = label
-    data_dir.mkdir(parents=True, exist_ok=True)
-    tmp = data_dir / "labels.json.tmp"
-    tmp.write_text(json.dumps(dict(sorted(labels.items())), ensure_ascii=False, indent=0), encoding="utf-8")
-    tmp.replace(data_dir / "labels.json")
+    save_labels(data_dir, labels)
     return labels
 
 

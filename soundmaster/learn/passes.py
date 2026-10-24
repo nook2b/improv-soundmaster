@@ -1,7 +1,10 @@
 """Кандидаты в «монтаж» по траекториям людей: кто-то крупный быстро прошёл поперёк кадра.
 
-Пороги нарочно мягкие: здесь нужно ничего не пропустить, а отличать настоящий «монтаж» от беготни
-в сцене будет модель, обученная на разметке. Координаты — доли кадра (0–1).
+Пороги подобраны по разметке Ивана («Компот 9», 285 отметок, 2026-10-24): монтажник крупный (рамка
+не меньше ~половины кадра), голова высоко (не зритель в первом ряду), проходит заметную часть ширины,
+и после прохода актёры на сцене стоят иначе, чем до (правило Ивана: если остальные остались — не монтаж),
+или проход видит и старый детектор по пикселям. Так остаются 15 монтажей из 16 и четверть «не монтажей».
+Отличать остальное будет модель, обученная на разметке. Координаты — доли кадра (0–1).
 """
 
 from __future__ import annotations
@@ -9,13 +12,16 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
+import numpy as np
+
 Box = tuple[float, float, float, float]  # x1, y1, x2, y2 — доли кадра
 
 
 @dataclass
 class PassConfig:
-    min_travel: float = 0.30  # какую долю ширины пройти
-    min_height: float = 0.18  # средняя высота фигуры (доля кадра): ближе к камере — крупнее
+    min_travel: float = 0.40  # какую долю ширины пройти
+    min_height: float = 0.45  # средняя высота фигуры (доля кадра): ближе к камере — крупнее
+    max_top: float = 0.45  # верх рамки выше этого (доля кадра от верха): у зрителей в зале рамка только снизу
     max_window: float = 6.0  # за сколько секунд, не дольше
     min_window: float = 0.3
     track_cooldown: float = 4.0  # одна фигура — не чаще одного кандидата за столько секунд
@@ -36,7 +42,7 @@ class PassFinder:
 
     def __init__(self, cfg: PassConfig | None = None):
         self.cfg = cfg or PassConfig()
-        self._hist: dict[int, deque[tuple[float, float, float]]] = {}  # id → (t, центр x, высота)
+        self._hist: dict[int, deque[tuple[float, float, float, float]]] = {}  # id → (t, центр x, высота, верх)
         self._cooldown: dict[int, float] = {}
 
     def push(self, t: float, boxes: dict[int, Box]) -> list[PassCandidate]:
@@ -44,7 +50,7 @@ class PassFinder:
         out = []
         for tid, (x1, y1, x2, y2) in boxes.items():
             h = self._hist.setdefault(tid, deque())
-            h.append((t, (x1 + x2) / 2, y2 - y1))
+            h.append((t, (x1 + x2) / 2, y2 - y1, y1))
             while h and t - h[0][0] > c.max_window:
                 h.popleft()
             if t < self._cooldown.get(tid, -1e9) or len(h) < 3:
@@ -56,7 +62,8 @@ class PassFinder:
                 continue
             seg = [p for p in h if p[0] >= start[0]]
             height = sum(p[2] for p in seg) / len(seg)
-            if height < c.min_height:
+            top = sum(p[3] for p in seg) / len(seg)
+            if height < c.min_height or top > c.max_top:
                 continue
             xs = [p[1] for p in seg]
             out.append(PassCandidate(start[0], t, tid, max(xs) - min(xs), height))
@@ -110,6 +117,72 @@ class FastTracker:
                 out[self._next] = d
                 self._next += 1
         return out
+
+
+Frames = list[tuple[float, dict[int, Box]]]  # рамки людей по времени: (t, {id траектории: рамка})
+
+
+def pass_end(track: int, frames: Frames, t_end: float, horizon: float = 4.0) -> float:
+    """Когда проход закончился: фигура ушла из кадра или перестала заметно двигаться."""
+    pts = [(t, (b[track][0] + b[track][2]) / 2) for t, b in frames if track in b and t_end - 1 <= t <= t_end + horizon]
+    end = t_end
+    for (t0, x0), (t1, x1) in zip(pts, pts[1:]):
+        if abs(x1 - x0) / max(t1 - t0, 1e-3) < 0.05:
+            break
+        end = t1
+    return end
+
+
+def pass_features(track: int, sources: list[str], frames: Frames, t_start: float, t_end: float,
+                  before: float = 3.0, after: float = 7.0) -> dict[str, float]:
+    """Признаки прохода для отбора и для модели. frames — рамки от t_start−before до t_end+after."""
+    pix = 1.0 if "pixel" in sources else 0.0
+    pts = [(t, b[track]) for t, b in frames if track in b]
+    f = {"span": 0.0, "speed": 0.0, "height": 0.0, "top": 1.0, "bottom": 1.0, "pixel": pix, "occlusion": 0.0,
+         "people_before": 0.0, "people_after": 0.0, "moved": 0.0, "straight": 0.0}
+    if len(pts) >= 3:
+        ts = np.array([p[0] for p in pts])
+        bx = np.array([p[1] for p in pts])
+        cx = (bx[:, 0] + bx[:, 2]) / 2
+        speed = 0.0
+        for i in range(len(ts)):
+            j = int(np.searchsorted(ts, ts[i] + 1.0))
+            if j < len(ts):
+                speed = max(speed, abs(cx[j] - cx[i]) / (ts[j] - ts[i]))
+        f.update(span=float(cx.max() - cx.min()), speed=speed, height=float((bx[:, 3] - bx[:, 1]).mean()),
+                 top=float(bx[:, 1].mean()), bottom=float(bx[:, 3].mean()),
+                 straight=float(abs(np.corrcoef(ts, cx)[0, 1])) if np.std(cx) > 0 else 0.0)
+
+        def overlap(a: Box, b: Box) -> float:
+            return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) / max(1e-6, min(a[2] - a[0], b[2] - b[0]))
+
+        f["occlusion"] = float(np.mean([sum(overlap(b[track], o) > 0.5 for k, o in b.items() if k != track)
+                                        for t, b in frames if track in b]))
+
+    def actors(t0: float, t1: float) -> list[float]:
+        """Центры актёров (крупные фигуры, кроме идущего) в кадре окна, где их видно больше всего."""
+        best: list[float] = []
+        for t, b in frames:
+            if t0 <= t <= t1:
+                xs = [(o[0] + o[2]) / 2 for k, o in b.items() if k != track and o[3] - o[1] > 0.3]
+                if len(xs) > len(best):
+                    best = xs
+        return best
+
+    pre = actors(t_start - before, t_start - before / 2)
+    post = actors(t_end + after - 2.0, t_end + after)
+    f["people_before"], f["people_after"] = float(len(pre)), float(len(post))
+    if pre:
+        # доля актёров «до», которых «после» нет на прежнем месте (ушли или перешли)
+        f["moved"] = float(np.mean([min((abs(x - y) for y in post), default=1.0) > 0.1 for x in pre]))
+    return f
+
+
+def is_scenecut_candidate(f: dict[str, float], cfg: PassConfig | None = None) -> bool:
+    """Стоит ли показывать проход на разметку: крупный, не зритель, далеко, и сцена после него другая."""
+    c = cfg or PassConfig()
+    return (f["height"] >= c.min_height and f["top"] <= c.max_top and f["span"] >= c.min_travel
+            and (f["moved"] > 0 or f["pixel"] > 0))
 
 
 def merge(cands: list[PassCandidate], gap: float = 3.0) -> list[PassCandidate]:
