@@ -211,3 +211,16 @@ def test_manual_montage_is_cut_and_labeled(tmp_path):
     assert load_labels(data)[c["id"]] == "cut"  # ручная отметка — сразу «монтаж»
     save_label(data, c["id"], "cut_other")
     assert load_labels(data)[c["id"]] == "cut_other"
+
+
+def test_watch_page_lists_youtube_videos(tmp_path):
+    from soundmaster.learn.label import WATCH, load_items, videos
+
+    (tmp_path / "abc.json").write_text(json.dumps({"video": "abc", "title": "Компот", "seconds": 100,
+        "source": "https://www.youtube.com/watch?v=abc", "candidates": [
+            {"id": "abc_000100", "clip": "abc_000100.mp4", "t_clip": 9.0, "t_start": 10.0, "t_pass_end": 12.5}]}),
+        encoding="utf-8")
+    assert videos(tmp_path) == [{"video": "abc", "title": "Компот", "seconds": 100, "youtube": True}]
+    it = load_items(tmp_path)[0]
+    assert (it["t_start"], it["t_end"]) == (10.0, 12.5)  # отрезок прохода — для таймлайна
+    assert "youtube.com/iframe_api" in WATCH
