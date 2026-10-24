@@ -112,7 +112,9 @@ class YoloPeople:
     Один объект — одно видео (траектории не переходят между записями); нейросеть грузится один раз.
     """
 
-    def __init__(self, model: str = "yolo11n.pt", imgsz: int = 416, conf: float = 0.3):
+    # yolo11s, а не n: на проходе перед камерой человек смазан и обрезан краем кадра — «s» находит его
+    # надёжнее, а медленнее всего в ~1,6 раза (замер 2026-10-24: 36 против 23 мс на кадр на CPU).
+    def __init__(self, model: str = "yolo11s.pt", imgsz: int = 416, conf: float = 0.25):
         if model not in _MODELS:
             from ultralytics import YOLO  # type: ignore
 
@@ -120,6 +122,7 @@ class YoloPeople:
         self.model = _MODELS[model]
         self.imgsz, self.conf = imgsz, conf
         self.tracker = FastTracker()
+        self.name = Path(model).stem
 
     def __call__(self, rgb: np.ndarray, t: float) -> dict[int, Box]:
         r = self.model.predict(rgb[..., ::-1], classes=[0], imgsz=self.imgsz, conf=self.conf,  # type: ignore[attr-defined]
@@ -204,7 +207,7 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             progress(f"  {title[:40]}: {t / 60:.0f} мин, кандидатов {len(done)}, скорость ×{speed:.1f}{left}")
     for c in merge(pending):
         finish(c)
-    result = {"video": vid, "title": title, "source": source if is_url(source) else Path(source).name,
+    result = {"video": vid, "title": title, "detector": getattr(detector, "name", ""), "source": source if is_url(source) else Path(source).name,
               "seconds": round(t, 1), "fps": fps, "detect_fps": fps / detect_every, "size": [W, H],
               "made": time.strftime("%Y-%m-%d %H:%M"), "candidates": done}
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -216,10 +219,10 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
 
 def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None = None, only_shows: bool = False,
             fps: float = 10.0, progress: Callable[[str], None] = print,
-            detector_factory: Callable[[], Callable] | None = None) -> list[dict]:
+            detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s.pt") -> list[dict]:
     """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются."""
     ffmpeg_bin()
-    make = detector_factory or YoloPeople
+    make = detector_factory or (lambda: YoloPeople(model))
     items: list[dict] = []
     for s in sources:
         if is_url(s):
