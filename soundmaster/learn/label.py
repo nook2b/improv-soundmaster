@@ -252,7 +252,7 @@ canvas.tl{width:100%;display:block;border-radius:6px;cursor:pointer;background:v
  <h2>3. Переход</h2>
  <div class="row">
   <button id="bPrev">← Предыдущий<kbd>P</kbd></button>
-  <button id="bNext">Следующий неразмеченный →<kbd>N</kbd></button>
+  <button id="bNext" title="Следующий неразмеченный в этом шоу; если всё размечено — просто следующий">Следующий →<kbd>N</kbd></button>
   <button class="tog" id="bLoop" aria-pressed="true">Повтор ролика<kbd>L</kbd></button>
   <select id="rate" aria-label="Скорость"><option value="0.5">×0.5</option><option value="1" selected>×1</option><option value="1.5">×1.5</option><option value="2">×2</option></select>
   <label class="muted"><input type="checkbox" id="auto" checked> после отметки — сразу к следующему</label>
@@ -339,8 +339,13 @@ for(const [id,zoom] of [["tlFull",false],["tlZoom",true]])$(id).addEventListener
 async function label(l,force){const c=curC();if(!c)return;const nl=labels[c.id]===l&&!force?null:l;const d=await post("/api/label",{id:c.id,label:nl});if(!d)return;
  if(nl)labels[c.id]=nl;else delete labels[c.id];say(`Ролик ${fmt(c.t_start)}: ${nl?NAMES[nl]:"отметка снята"}`);renderVids();draw();
  if(nl&&$("auto").checked)setTimeout(()=>next(),250)}
-function next(){const cs=cands(),c=curC(),from=c?c.t_start:t;const n=cs.find(x=>!labels[x.id]&&x.t_start>from)||cs.find(x=>!labels[x.id]);
- if(n){select(n);return}const ov=vids.find(v=>v.video!==video&&todo(v.video)>0);if(ov){say("Это видео размечено полностью — следующее");openVideo(ov.video)}else say("Всё размечено. Отправьте: git add data/scenecut, git commit, git push")}
+// Видео сама страница не переключает: только кнопкой шоу сверху (Иван перепроверяет размеченные шоу).
+function next(){const cs=cands(),c=curC(),from=c?c.t_start:t;
+ const n=cs.find(x=>!labels[x.id]&&x.t_start>from)||cs.find(x=>!labels[x.id]);if(n){select(n);return}
+ const r=cs.find(x=>x.t_start>from+0.5);  // шоу размечено — просто следующий ролик, для перепроверки
+ if(r){select(r);say("В этом шоу всё размечено — идём по роликам для перепроверки");return}
+ const ov=vids.find(v=>v.video!==video&&todo(v.video)>0);
+ say(ov?`Это последний ролик шоу. Неразмеченные есть в «${ov.title}» — выберите его кнопкой сверху.`:"Это последний ролик шоу. Всё размечено — отправьте: git add data/scenecut, git commit, git push")}
 function prev(){const cs=cands(),c=curC(),from=c?c.t_start:t;const p=[...cs].reverse().find(x=>x.t_start<from-0.5);if(p)select(p)}
 function setPick(on){pick=on&&!!curC();$("ov").classList.toggle("pick",pick);if(pick){if(player&&ready)player.pauseVideo();say("Кликните по рамке человека, который делает монтаж (Esc — отмена)")}draw()}
 $("ov").addEventListener("click",async e=>{if(!pick)return;const c=bx.find(x=>x.id===cur);if(!c){setPick(false);return}
