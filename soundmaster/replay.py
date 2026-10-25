@@ -38,6 +38,7 @@ from .registry import load_registry
 from .report import summarize, write_html
 
 AUDIO_BLOCK = 1600  # 0,1 с при 16 кГц
+ASR_WARMUP_TIMEOUT = 900.0  # загрузка модели распознавания (первый раз — со скачиванием)
 
 
 @dataclass
@@ -122,6 +123,7 @@ class Replay:
             rules=FastRules(self.registry), scheduler=self.scheduler, scenecut=scenecut,
             synchronous=self.fast,
         )
+        self.feeder_error: str | None = None
         self.video_fps = float((cfg.raw.get("video") or {}).get("fps", 5))
         self.video_width = int((cfg.raw.get("video") or {}).get("width", 640))
 
@@ -153,6 +155,14 @@ class Replay:
         return asyncio.run(self._run())
 
     async def _run(self) -> dict[str, Any]:
+        if not self.fast and self.asr_worker:
+            # Сначала загрузить модель: иначе начало записи пройдёт, пока она грузится,
+            # а очередь держит лишь несколько фраз — ранняя речь потеряется.
+            started = time.monotonic()
+            self.asr_worker.start()
+            ok = await asyncio.to_thread(self.asr_worker.wait_ready, ASR_WARMUP_TIMEOUT)
+            self.journal.write("asr_warmup", state=self.asr_worker.state, ok=ok,
+                               seconds=round(time.monotonic() - started, 2), error=self.asr_worker.last_error)
         t0 = self.clock.now()
         self.journal.write("replay_start", media_t0=round(t0, 4), speed=self.opts.speed,
                            asr=self.asr.name if self.asr else None,
@@ -204,26 +214,30 @@ class Replay:
         self.listener.loop = loop
         out = NullOutput(self.mixer, self.clock, on_block=self.engine.on_output_block)
         out.start()
-        if self.asr_worker:
-            self.asr_worker.start()
         sched_task = asyncio.create_task(self.scheduler.run()) if self.scheduler else None
         done = threading.Event()
         last = {"t": 0.0}
 
         def feeder() -> None:
-            for t_avail, kind, payload in self._events():
-                wait = t0 + t_avail - self.clock.now()
-                if wait > 0:
-                    time.sleep(wait)
-                last["t"] = t_avail
-                if kind == "audio":
-                    t, block = payload
-                    self.listener.feed_audio(block, t0 + t, ASR_RATE)
-                else:
-                    t, rgb = payload
-                    self.listener.feed_frame(t0 + t, rgb)
-            self.listener.flush_audio(t0 + last["t"])
-            done.set()
+            try:
+                for t_avail, kind, payload in self._events():
+                    wait = t0 + t_avail - self.clock.now()
+                    if wait > 0:
+                        time.sleep(wait)
+                    last["t"] = t_avail
+                    if kind == "audio":
+                        t, block = payload
+                        self.listener.feed_audio(block, t0 + t, ASR_RATE)
+                    else:
+                        t, rgb = payload
+                        self.listener.feed_frame(t0 + t, rgb)
+                self.listener.flush_audio(t0 + last["t"])
+            except Exception as e:  # noqa: BLE001 — сбой чтения/обработки: прогон завершается, а не висит
+                self.feeder_error = f"{type(e).__name__}: {e}"[:500]
+                self.journal.write("replay_error", where="feeder", error=self.feeder_error,
+                                   media_t=round(last["t"], 3))
+            finally:
+                done.set()
 
         th = threading.Thread(target=feeder, name="replay-feeder", daemon=True)
         th.start()
@@ -231,22 +245,29 @@ class Replay:
             self.controller.tick()
             await asyncio.sleep(0.05)
         # Дождаться распознавания хвоста и последнего ответа модели.
+        # Дождаться распознавания хвоста и последнего ответа модели. Готовый текст приходит в цикл
+        # через call_soon_threadsafe, поэтому «пусто» должно повториться дважды подряд.
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
+        idle_checks = 0
+        while time.monotonic() < deadline and idle_checks < 2:
             self.controller.tick()
-            busy = (self.asr_worker and not self.asr_worker.q.empty()) or (
-                self.scheduler and (self.scheduler.in_flight or self.scheduler.should_request() == "transcript"))
-            if not busy:
-                break
+            idle_checks = 0 if self._draining_busy() else idle_checks + 1
             await asyncio.sleep(0.1)
         await asyncio.sleep(0.5)
         self.controller.tick()
         if sched_task:
             sched_task.cancel()
         if self.asr_worker:
-            self.asr_worker.stop()
+            await asyncio.to_thread(self.asr_worker.stop)  # join не на потоке цикла
         out.stop()
         return last["t"]
+
+    def _draining_busy(self) -> bool:
+        if self.asr_worker and self.asr_worker.busy:
+            return True
+        sc = self.scheduler
+        # pending ждёт min_interval (should_request тогда None) — это тоже «ещё не всё».
+        return bool(sc and sc.enabled and not sc.stopped_by_budget and (sc.in_flight or sc.pending))
 
 
 def print_summary(s: dict[str, Any], out_dir: Path) -> None:

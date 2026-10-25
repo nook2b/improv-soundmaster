@@ -40,6 +40,31 @@ def test_vad_force_cuts_long_speech():
     assert all(u.t_end - u.t_start <= 6.1 for u in utts)
 
 
+def test_vad_pauses_over_steady_bed():
+    """Ровная подложка −25 dBFS (музыка/колонки в рекордере) + реплики с паузами:
+    фразы заканчиваются на паузах, а не принудительными кусками по 6 с."""
+    rng = np.random.default_rng(3)
+    parts, ends = [], []
+    t = 0.0
+    for i in range(12):
+        pause = 1.0 + 0.5 * (i % 3)
+        dur = 1.5 + 0.3 * (i % 4)
+        parts += [np.zeros(int(pause * SR), np.float32), speech_like(dur, amp=0.8)]
+        t += pause + dur
+        ends.append(t)
+    parts.append(np.zeros(SR, np.float32))
+    x = np.concatenate(parts)
+    n = np.arange(len(x)) / SR
+    bed = 10 ** (-25 / 20) * np.sqrt(2) * np.sin(2 * np.pi * 330 * n) + 0.01 * rng.standard_normal(len(x))
+    vad = EnergyVAD(SR)
+    utts = run_vad((x + bed).astype(np.float32), vad)
+    assert not any(u.forced_cut for u in utts)
+    assert len(utts) == 12
+    for u, e in zip(utts, ends):
+        assert e - 0.1 < u.t_end < e + 0.8
+    assert vad.noise_db > -30
+
+
 def test_hallucinations_removed():
     assert clean_text("Продолжение следует...") == ""
     assert clean_text("  ...  ") == ""
@@ -164,3 +189,86 @@ def test_camera_args_per_platform(monkeypatch):
     assert args[:2] == ["-f", "dshow"] and args[-1] == "video=Logitech BRIO"
     monkeypatch.setattr(_sys, "platform", "linux")
     assert ff.camera_input_args("1", "1280x720", 30)[-1] == "/dev/video1"
+
+
+def test_probe_swaps_size_for_rotated_video(monkeypatch):
+    import json as _json
+    import subprocess as _sp
+
+    from soundmaster.media import ffmpeg as ff
+
+    def fake_probe(rotation_stream):
+        data = {"format": {"duration": "3.0"}, "streams": [
+            {"codec_type": "video", "width": 1920, "height": 1080, **rotation_stream},
+            {"codec_type": "audio"}]}
+        return lambda *a, **k: _sp.CompletedProcess(a, 0, _json.dumps(data), "")
+
+    monkeypatch.setattr(ff, "ffmpeg_bin", lambda name="ffmpeg": name)
+    for extra, size in [({"side_data_list": [{"side_data_type": "Display Matrix", "rotation": -90}]}, (1080, 1920)),
+                        ({"tags": {"rotate": "270"}}, (1080, 1920)),
+                        ({"tags": {"rotate": "180"}}, (1920, 1080)),
+                        ({}, (1920, 1080))]:
+        monkeypatch.setattr(ff.subprocess, "run", fake_probe(extra))
+        info = ff.probe("phone.mov")
+        assert (info.width, info.height) == size
+
+
+def test_camera_reader_survives_stderr_flood_and_frame_errors(monkeypatch):
+    import sys as _sys
+
+    from soundmaster.media import ffmpeg as ff
+
+    w, h = 4, 2
+    script = ("import sys\n"
+              "for i in range(4000): sys.stderr.write('frame dropped %d\\n' % i)\n"
+              "sys.stderr.flush()\n"
+              f"sys.stdout.buffer.write(bytes({w * h * 3 * 3}))\n"
+              "sys.stdout.flush()\n"
+              "sys.stderr.write('конец\\n')\n")
+    real_popen = ff.subprocess.Popen
+    # Вместо ffmpeg — скрипт: много строк в stderr (как DirectShow о пропусках), затем 3 кадра.
+    monkeypatch.setattr(ff, "ffmpeg_bin", lambda name="ffmpeg": name)
+    monkeypatch.setattr(ff.subprocess, "Popen", lambda cmd, **k: real_popen([_sys.executable, "-c", script], **k))
+    got = []
+
+    def on_frame(t, rgb):
+        got.append(rgb.shape)
+        if len(got) == 1:
+            raise ValueError("сбой детектора")
+
+    cam = ff.CameraReader("0", 5, w, h, on_frame, FakeClock(0))
+    cam.start()
+    cam._thread.join(timeout=10)
+    assert not cam._thread.is_alive()
+    assert got == [(h, w, 3)] * 3 and cam.frame_errors == 1
+    assert cam.error and "камера остановилась" in cam.error and "конец" in cam.error
+    cam.stop()
+
+
+def test_asr_worker_busy_until_processed():
+    import threading as _threading
+
+    gate = _threading.Event()
+
+    class SlowASR(ScriptedASR):
+        def transcribe(self, audio, t_start=0.0, t_end=0.0):
+            gate.wait(5)
+            return "текст"
+
+    got = []
+    w = ASRWorker(SlowASR([]), FakeClock(0), got.append)
+    assert not w.busy
+    w.start()
+    assert w.wait_ready(5) and w.state == "ready"
+    u = run_vad(np.concatenate([silence(0.5), speech_like(1.0), silence(1.0)]), EnergyVAD(SR))[0]
+    w.submit(u)
+    import time as _time
+    _time.sleep(0.1)
+    assert w.q.empty() and w.busy  # фраза взята из очереди, но ещё распознаётся
+    gate.set()
+    for _ in range(100):
+        if not w.busy:
+            break
+        _time.sleep(0.02)
+    assert not w.busy and [t.text for t in got] == ["текст"]
+    w.stop()

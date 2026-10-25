@@ -173,3 +173,47 @@ def test_replay_music_auto_and_scene_cut_changes_music(scene_video, tmp_path):
     assert rp.music.current("music").id == f"style:{neutral.id}"
     assert rp.music.active["music"].owner == "system"
     assert any(r["kind"] == "music" and r.get("state") == f"style:{neutral.id}" and r["t"] >= t_cut for r in j)
+
+
+def test_replay_realtime_waits_for_asr_warmup(scene_video, tmp_path):
+    """Подача записи начинается только после загрузки модели распознавания."""
+    import time as _time
+
+    from soundmaster.media.asr import ScriptedASR, load_transcript_file
+
+    class SlowASR(ScriptedASR):
+        def warmup(self):
+            _time.sleep(1.0)
+
+    asr = SlowASR(load_transcript_file(scene_video.with_suffix(".txt")))
+    opts = ReplayOptions(media=scene_video, config=ROOT / "config" / "show.yaml", speed=1,
+                         out_dir=tmp_path, max_seconds=3.0, video=False)
+    rp = Replay(opts, asr=asr)
+    summary = rp.run()
+    j = load_journal(rp.out_dir / "journal.jsonl")
+    kinds = [r["kind"] for r in j]
+    warm = next(r for r in j if r["kind"] == "asr_warmup")
+    assert warm["state"] == "ready" and warm["seconds"] >= 0.9
+    assert kinds.index("asr_warmup") < kinds.index("replay_start")
+    assert summary["transcripts"] == 1
+
+
+def test_replay_realtime_feeder_error_does_not_hang(scene_video, tmp_path):
+    import threading as _threading
+
+    opts = ReplayOptions(media=scene_video, config=ROOT / "config" / "show.yaml", speed=1,
+                         transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path, max_seconds=2.0)
+    rp = Replay(opts)
+
+    def broken(*a, **k):
+        raise RuntimeError("сломанный кадр")
+
+    rp.listener.feed_frame = broken
+    th = _threading.Thread(target=rp.run, daemon=True)
+    th.start()
+    th.join(timeout=60)
+    assert not th.is_alive(), "прогон завис после ошибки подачи"
+    assert rp.feeder_error and "сломанный кадр" in rp.feeder_error
+    j = load_journal(rp.out_dir / "journal.jsonl")
+    assert any(r["kind"] == "replay_error" for r in j)
+    assert any(r["kind"] == "replay_end" for r in j)

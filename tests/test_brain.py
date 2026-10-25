@@ -121,6 +121,55 @@ def test_http_error_is_reported_not_raised(monkeypatch):
     assert r.actions == [] and "429" in r.error
 
 
+def test_bad_json_after_200_keeps_cost(monkeypatch):
+    """Ответ оплачен (HTTP 200), но JSON негодный: ошибка в результате, расход не теряется."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    replies = [
+        {"choices": [{"message": {"content": "{не json"}}],
+         "usage": {"prompt_tokens": 1000, "completion_tokens": 100}},
+        {"choices": [{"message": {"content": None, "refusal": "нельзя"}}],
+         "usage": {"prompt_tokens": 1000, "completion_tokens": 100}},
+    ]
+
+    async def handler(req):
+        return web.json_response(replies.pop(0))
+
+    async def main():
+        runner, base = await serve(handler)
+        b = OpenAIBrain(registry(), "gpt-5-mini", Prices(1.0, 0.0, 10.0))
+        b.URL = base + "/x"
+        out = [await b.decide("ctx", None), await b.decide("ctx", None)]
+        await b.close()
+        await runner.cleanup()
+        return out
+
+    for r in asyncio.run(main()):
+        assert r.actions == [] and r.error
+        assert r.usage.input_tokens == 1000 and r.usage.output_tokens == 100
+        assert abs(r.cost - (1000 * 1.0 + 100 * 10.0) / 1e6) < 1e-12
+
+
+def test_gemini_empty_candidates_keeps_cost(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+
+    async def handler(req):
+        return web.json_response({"promptFeedback": {"blockReason": "OTHER"},
+                                  "usageMetadata": {"promptTokenCount": 500}})
+
+    async def main():
+        runner, base = await serve(handler)
+        b = GeminiBrain(registry(), "gemini-flash", Prices(1.0, 0.0, 10.0))
+        b.URL = base + "/{model}"
+        r = await b.decide("ctx", None)
+        await b.close()
+        await runner.cleanup()
+        return r
+
+    r = asyncio.run(main())
+    assert r.error and "пустой ответ" in r.error
+    assert r.usage.input_tokens == 500 and abs(r.cost - 500 / 1e6) < 1e-12
+
+
 def test_missing_key_reported(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     r = asyncio.run(OpenAIBrain(registry(), "m", Prices()).decide("ctx", None))
