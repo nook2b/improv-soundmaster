@@ -314,7 +314,7 @@ function draw(){for(const [id,zoom] of [["tlFull",false],["tlZoom",true]]){const
  g.fillStyle=css("--manual");for(const m of manual[video]||[]){const x=X(m);if(x>=0&&x<=w){g.beginPath();g.moveTo(x-6,2);g.lineTo(x+6,2);g.lineTo(x,12);g.fill();g.fillRect(x-1,2,2,h-20)}}
  g.fillStyle=css("--fg");const xc=X(t);g.fillRect(xc-1,0,2,h);
  if(!zoom){g.strokeStyle=css("--accent");g.strokeRect(X(t-60),1,X(t+60)-X(t-60),h-2)}}
- const n=nearest();$("near").textContent=n?`· ролик ${fmt(n.t_start)}`:"";
+ $("cur").textContent=fmt(t);const n=nearest();$("near").textContent=n?`· ролик ${fmt(n.t_start)}`:"· рядом роликов нет";
  [["bCut","cut"],["bCut2","cut_other"],["bNo","no"],["bUnsure","unsure"]].forEach(([b,k])=>{$(b).disabled=!n;$(b).setAttribute("aria-pressed",!!n&&labels[n.id]===k)})}
 function seek(s){s=Math.max(0,Math.min(dur-1,s));t=s;if(player&&ready)player.seekTo(s,true);draw()}
 for(const [id,zoom] of [["tlFull",false],["tlZoom",true]])$(id).addEventListener("click",e=>{const r=e.currentTarget.getBoundingClientRect(),f=(e.clientX-r.left)/r.width;
@@ -324,7 +324,7 @@ async function label(l,force){const n=nearest();if(!n)return;const nl=labels[n.i
  if(!r.ok){$("msg").textContent="Не сохранилось";return}if(nl)labels[n.id]=nl;else delete labels[n.id];$("msg").textContent=`Ролик ${fmt(n.t_start)}: ${nl?{cut:"монтаж",cut_other:"монтаж, рамка мимо",no:"не монтаж",unsure:"непонятно"}[nl]:"отметка снята"}`;draw()}
 async function here(){const n=nearest();if(n){if(labels[n.id]!=="cut"&&labels[n.id]!=="cut_other")await label("cut",true);else $("msg").textContent=`Ролик ${fmt(n.t_start)} уже отмечен как монтаж`;return}
  const r=await fetch("/api/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({video,t})});const d=await r.json();
- if(!r.ok){$("msg").textContent="Не сохранилось";return}manual=d.manual;$("msg").textContent=`Ручная отметка ${fmt(t)} добавлена — ролик появится после следующего сбора. Убрать — щелчок по синей метке с Alt.`;draw()}
+ if(!r.ok){$("msg").textContent="Не сохранилось";return}manual=d.manual;$("msg").textContent=`Монтаж ${fmt(t)} отмечен вручную — больше ничего нажимать не нужно: после следующего сбора по нему появится ролик уже с меткой «монтаж». Убрать — щелчок по синей метке с Alt.`;draw()}
 $("tlZoom").addEventListener("click",async e=>{if(!e.altKey)return;const near=(manual[video]||[]).find(m=>Math.abs(m-t)<3);if(!near)return;
  const r=await fetch("/api/manual",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({video,t:near,remove:true})});const d=await r.json();manual=d.manual;$("msg").textContent=`Ручная отметка ${fmt(near)} убрана`;draw()});
 function jump(dir){const cs=cands();const c=dir>0?cs.find(c=>c.t_start>t+1):[...cs].reverse().find(c=>c.t_start<t-1);if(c)seek(Math.max(0,c.t-1))}
