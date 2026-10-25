@@ -90,7 +90,7 @@ def test_process_video_writes_clip_and_boxes(tmp_path):
     (tmp_path / "clips" / "vid1_000001.mp4").write_bytes(b"old")  # ролик прошлого сбора
     (tmp_path / "clips" / "other_000001.mp4").write_bytes(b"keep")  # другое видео — не трогаем
     r = process(str(video), "vid1", "Компот — тест", tmp_path / "data", tmp_path / "clips", fake_people,
-                progress=lambda s: None)
+                progress=lambda s: None, save_clips=True)
     assert not (tmp_path / "clips" / "vid1_000001.mp4").exists()
     assert (tmp_path / "clips" / "other_000001.mp4").exists()
     assert len(r["candidates"]) == 1
@@ -214,7 +214,7 @@ def test_manual_montage_is_cut_and_labeled(tmp_path):
 
 
 def test_watch_page_lists_youtube_videos(tmp_path):
-    from soundmaster.learn.label import WATCH, load_items, videos
+    from soundmaster.learn.label import PAGE, load_items, videos
 
     (tmp_path / "abc.json").write_text(json.dumps({"video": "abc", "title": "Компот", "seconds": 100,
         "source": "https://www.youtube.com/watch?v=abc", "candidates": [
@@ -223,7 +223,7 @@ def test_watch_page_lists_youtube_videos(tmp_path):
     assert videos(tmp_path) == [{"video": "abc", "title": "Компот", "seconds": 100, "youtube": True}]
     it = load_items(tmp_path)[0]
     assert (it["t_start"], it["t_end"]) == (10.0, 12.5)  # отрезок прохода — для таймлайна
-    assert "youtube.com/iframe_api" in WATCH
+    assert "youtube.com/iframe_api" in PAGE
 
 
 def test_boxes_for_player_overlay(tmp_path):
@@ -233,7 +233,7 @@ def test_boxes_for_player_overlay(tmp_path):
         {"id": "abc_000100", "track": 7, "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]}),
         encoding="utf-8")
     got = boxes(tmp_path, "abc")
-    assert got == [{"id": "abc_000100", "track": "7",
+    assert got == [{"id": "abc_000100", "track": "7", "fixed": False,
                     "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]
     assert boxes(tmp_path, "../abc") == [] and boxes(tmp_path, "nope") == []
 

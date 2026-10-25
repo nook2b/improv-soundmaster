@@ -175,11 +175,13 @@ def manual_candidate(tm: float, log: list[tuple[float, dict[int, Box]]]) -> Pass
 
 def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, detector: Callable,
             fps: float = 10.0, detect_every: int = 2, progress: Callable[[str], None] = print,
-            duration: float = 0.0, manual: list[float] | None = None) -> dict:
+            duration: float = 0.0, manual: list[float] | None = None, save_clips: bool = False) -> dict:
     """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json.
 
-    manual — моменты (секунды записи), которые Иван отметил как пропущенный монтаж: по ним ролик
-    нарезается всегда, без отбора, и сразу получает метку «монтаж».
+    manual — моменты (секунды записи), которые Иван отметил как пропущенный монтаж: по ним кандидат
+    создаётся всегда, без отбора, и сразу получает метку «монтаж».
+    save_clips — нарезать ролики mp4 (страница разметки их больше не использует: видео играет с YouTube,
+    рамки рисуются поверх; ролики нужны только для записей не с YouTube).
     """
     manual_q = sorted(manual or [])
     ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (WIDE_BEFORE + AFTER + 14)))
@@ -216,14 +218,19 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
                     imgs.append(img)
             return imgs
 
-        imgs = shots(a, b)
-        if len(imgs) < fps:  # начало видео — ролик слишком короткий
+        n_frames = sum(1 for ft, _ in ring if a <= ft <= b)
+        if n_frames < fps:  # начало видео — отрезок слишком короткий
             return
-        write_clip(clip_dir / f"{cid}.mp4", imgs, fps)
-        wide = shots(c.t_start - WIDE_BEFORE, c.t_end + AFTER)
-        if len(wide) > len(imgs):
-            write_clip(clip_dir / f"{cid}_wide.mp4", wide, fps)
-        done.append({"id": cid, "clip": f"{cid}.mp4", "clip_wide": f"{cid}_wide.mp4" if len(wide) > len(imgs) else None,
+        clip = wide_clip = None
+        if save_clips:
+            imgs = shots(a, b)
+            write_clip(clip_dir / f"{cid}.mp4", imgs, fps)
+            clip = f"{cid}.mp4"
+            wide = shots(c.t_start - WIDE_BEFORE, c.t_end + AFTER)
+            if len(wide) > len(imgs):
+                write_clip(clip_dir / f"{cid}_wide.mp4", wide, fps)
+                wide_clip = f"{cid}_wide.mp4"
+        done.append({"id": cid, "clip": clip, "clip_wide": wide_clip,
                      "t_clip": round(a, 2), "t_seen": round(seen, 2), "t_pass_end": round(end, 2),
                      **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in asdict(c).items()},
                      "features": {k: round(float(v), 3) for k, v in feats.items()},
@@ -281,8 +288,8 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
         labels.update({cid: "cut" for cid in marked})
         save_labels(out_dir, labels)
     # ролики прошлых сборов этого видео больше не нужны — не копим их на диске
-    keep = {c["clip"] for c in done} | {c["clip_wide"] for c in done if c.get("clip_wide")}
-    for old in clip_dir.glob(f"{vid}_*.mp4"):
+    keep = {c["clip"] for c in done if c.get("clip")} | {c["clip_wide"] for c in done if c.get("clip_wide")}
+    for old in (clip_dir.glob(f"{vid}_*.mp4") if clip_dir.exists() else []):
         if old.name not in keep:
             old.unlink(missing_ok=True)
     tmp = out_dir / f"{vid}.json.tmp"
@@ -357,7 +364,8 @@ def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[s
 
 def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None = None, only_shows: bool = False,
             fps: float = 10.0, progress: Callable[[str], None] = print,
-            detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s.pt") -> list[dict]:
+            detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s.pt",
+            save_clips: bool = False) -> list[dict]:
     """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются."""
     ffmpeg_bin()
     make = detector_factory or (lambda: YoloPeople(model))
@@ -397,7 +405,7 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
         progress(f"[{n}/{len(todo)}] {e['title']}")
         try:
             r = process(e["url"], e["id"], e["title"], out_dir, clip_dir, make(), fps=fps, progress=progress,
-                        manual=manual.get(e["id"], []),
+                        manual=manual.get(e["id"], []), save_clips=save_clips,
                         duration=e["duration"])
         except Exception as ex:  # noqa: BLE001 — одно видео не должно останавливать остальные
             progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]}")

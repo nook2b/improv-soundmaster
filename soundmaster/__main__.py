@@ -71,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--only-shows", action="store_true", help="только шоу (в названии «Компот» или «шоу»)")
     cs.add_argument("--out", default="data/scenecut", help="куда писать рамки людей (в git)")
     cs.add_argument("--clips", default="recordings/scenecut_clips", help="куда писать ролики (не в git)")
+    cs.add_argument("--save-clips", action="store_true",
+                    help="нарезать ролики mp4 (не нужно для YouTube: разметка смотрит видео во встроенном плеере)")
     cs.add_argument("--model", default="yolo11s.pt", help="нейросеть для людей (yolo11n.pt — быстрее, yolo11m.pt — точнее)")
     ls_ = sub.add_parser("label-scenecuts", help="разметить собранные ролики «монтаж / не монтаж» в браузере")
     ls_.add_argument("--out", default="data/scenecut")
@@ -83,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             res = collect(args.sources, Path(args.out), Path(args.clips), limit=args.limit,
-                          only_shows=args.only_shows, model=args.model)
+                          only_shows=args.only_shows, model=args.model, save_clips=args.save_clips)
         except (RuntimeError, ImportError) as e:
             print(f"Ошибка: {e}")
             return 1
