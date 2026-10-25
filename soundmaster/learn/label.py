@@ -101,7 +101,8 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.Response(text=WATCH, content_type="text/html")
 
     async def items(_req):
-        return web.json_response({"items": [i for i in load_items(data_dir) if (clip_dir / i["clip"]).exists()],
+        # ролик может быть ещё не нарезан (идёт сбор) или удалён — таймлайну «Всё видео» он не нужен
+        return web.json_response({"items": [{**i, "has_clip": (clip_dir / i["clip"]).exists()} for i in load_items(data_dir)],
                                   "labels": load_labels(data_dir), "manual": load_manual(data_dir),
                                   "videos": videos(data_dir)})
 
@@ -209,10 +210,10 @@ $("mAdd").onclick=()=>{const m=$("mTime").value.trim().match(/^(?:(\d+):)?(\d{1,
  if(!m){$("mMsg").textContent="Время в виде 12:30 или 1:02:30";return}const t=(+(m[1]||0))*3600+(+m[2])*60+(+m[3]);
  const vd=vids.find(x=>x.video===$("mVid").value);if(vd&&vd.seconds&&t>vd.seconds){$("mMsg").textContent="Видео короче";return}
  saveManual($("mVid").value,t,false);$("mTime").value=""};
-async function load(){const r=await fetch("/api/items");const d=await r.json();all=d.items;labels=d.labels;manual=d.manual||{};vids=d.videos||[];videos();filter();renderManual();
+async function load(){const r=await fetch("/api/items");const d=await r.json();all=d.items.filter(x=>x.has_clip);labels=d.labels;manual=d.manual||{};vids=d.videos||[];videos();filter();renderManual();
  i=Math.max(0,items.findIndex(x=>!labels[x.id]));show()}
 $("vid").onchange=()=>{if($("vid").value){$("mVid").value=$("vid").value;renderManual()}filter();i=Math.max(0,items.findIndex(x=>!labels[x.id]));show()};
-function show(){if(!items.length){$("pos").textContent="Пока нет роликов — сбор ещё идёт";return}
+function show(){if(!items.length){$("pos").textContent="Пока нет роликов: сбор ещё идёт (видео появляется, когда пройдено целиком) или ролики удалены. «Всё видео с таймлайном» работает и без них.";return}
  i=(i+items.length)%items.length;const it=items[i];$("pos").textContent=`${i+1} / ${items.length}`;
  $("title").textContent=`${it.title} · ${fmt(it.t)}`;
  const yt=$("yt");if(it.url){yt.hidden=false;yt.href=`https://www.youtube.com/watch?v=${it.video}&t=${Math.max(0,Math.floor(it.t)-3)}s`}else yt.hidden=true;
@@ -235,8 +236,8 @@ document.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
  if(e.key==="1")mark("cut");else if(e.key==="2")mark("no");else if(e.key==="3")mark("unsure");else if(e.key==="4")toggleWide();else if(e.key==="5")toggleSlow();else if(e.key==="6")mark("cut_other");
  else if(e.key==="ArrowRight"){i++;show()}else if(e.key==="ArrowLeft"){i--;show()}
  else if(e.key===" "){e.preventDefault();v.paused?v.play():v.pause()}});
-setInterval(async()=>{const r=await fetch("/api/items");const d=await r.json();if(d.items.length!==all.length){const cur=items[i]&&items[i].id;
- all=d.items;labels=d.labels;manual=d.manual||{};vids=d.videos||[];videos();filter();renderManual();const j=items.findIndex(x=>x.id===cur);i=j<0?i:j;show()}},20000);
+setInterval(async()=>{const r=await fetch("/api/items");const d=await r.json();const got=d.items.filter(x=>x.has_clip);if(got.length!==all.length){const cur=items[i]&&items[i].id;
+ all=got;labels=d.labels;manual=d.manual||{};vids=d.videos||[];videos();filter();renderManual();const j=items.findIndex(x=>x.id===cur);i=j<0?i:j;show()}},20000);
 load();
 </script></body></html>"""
 
