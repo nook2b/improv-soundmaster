@@ -116,7 +116,7 @@ def save_track(data_dir: Path, cid: str, track: str | None) -> dict[str, str]:
 def boxes(data_dir: Path, video: str) -> list[dict]:
     """Рамки людей по роликам одного видео — для рамок поверх плеера: [{id, track, frames: [[t, {id: рамка}]]}]."""
     p = data_dir / f"{video}.json"
-    if "/" in video or "\\" in video or ".." in video or not p.exists():
+    if any(ch in video for ch in "/\\:") or ".." in video or not p.exists():
         return []
     d = json.loads(p.read_text(encoding="utf-8"))
     fixed = load_tracks(data_dir)
@@ -171,7 +171,7 @@ def make_app(data_dir: Path, clip_dir: Path):
     async def clip(req):
         name = req.match_info["name"]
         path = clip_dir / name
-        if "/" in name or "\\" in name or ".." in name or not path.exists():
+        if any(ch in name for ch in "/\\:") or ".." in name or not path.exists():
             raise web.HTTPNotFound()
         return web.FileResponse(path)
 
@@ -294,11 +294,19 @@ function renderVids(){let n=0,done=0,full=0;const el=$("vids");el.innerHTML="";
  $("total").textContent=`размечено ${done} из ${n} роликов · видео готово ${full} из ${vids.length}`;$("totalBar").style.width=(n?done/n*100:0)+"%"}
 
 // ---- плеер ----
-async function openVideo(v){if(v===video)return;video=v;cur=null;t=0;const vd=vids.find(x=>x.video===v);dur=vd&&vd.seconds||1;
+async function openVideo(v){if(v===video)return;video=v;cur=null;t=0;bx=[];const vd=vids.find(x=>x.video===v);dur=vd&&vd.seconds||1;
  try{const r=await fetch("/api/boxes?video="+encodeURIComponent(v));bx=(await r.json()).boxes||[]}catch(e){bx=[]}
- if(player&&ready)player.loadVideoById(v);else makePlayer();renderVids();const c=cands().find(x=>!labels[x.id]);if(c)select(c,false);draw()}
+ const c=cands().find(x=>!labels[x.id])||cands()[0];if(c){cur=c.id;t=c.t}renderVids();
+ // плеер может быть ещё не готов: тогда нужное видео загрузит onReady
+ if(player&&ready)player.loadVideoById({videoId:v,startSeconds:c?c.t:0});else makePlayer();draw()}
 function makePlayer(){if(player||!video||!(window.YT&&YT.Player))return;player=new YT.Player("yt",{videoId:video,playerVars:{rel:0,modestbranding:1,playsinline:1},
- events:{onReady:()=>{ready=true;const d=player.getDuration();if(d)dur=d;player.setPlaybackRate(+$("rate").value);const c=curC();if(c)player.seekTo(c.t,true)}}})}
+ events:{onReady:()=>{ready=true;const c=curC();
+   if(player.getVideoData().video_id!==video)player.loadVideoById({videoId:video,startSeconds:c?c.t:0});
+   else if(c)player.seekTo(c.t,true);
+   const d=player.getDuration();if(d)dur=d;player.setPlaybackRate(+$("rate").value)},
+  onStateChange:e=>{if(e.data===1){const d=player.getDuration();if(d)dur=d;if(player.getPlaybackRate()!==+$("rate").value)player.setPlaybackRate(+$("rate").value)}}}})}
+// клик по видео отдаёт клавиатуру плееру YouTube (M — его «без звука»): возвращаем её странице
+addEventListener("blur",()=>setTimeout(()=>{const a=document.activeElement;if(a&&a.tagName==="IFRAME"){a.blur();window.focus()}},150));
 window.onYouTubeIframeAPIReady=()=>makePlayer();
 function seek(s){s=Math.max(0,Math.min(dur-1,s));t=s;if(player&&ready)player.seekTo(s,true);draw()}
 function select(c,play=true){cur=c.id;seek(c.t);if(play&&player&&ready)player.playVideo();draw()}

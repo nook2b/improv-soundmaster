@@ -235,7 +235,7 @@ def test_boxes_for_player_overlay(tmp_path):
     got = boxes(tmp_path, "abc")
     assert got == [{"id": "abc_000100", "track": "7", "fixed": False,
                     "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]
-    assert boxes(tmp_path, "../abc") == [] and boxes(tmp_path, "nope") == []
+    assert boxes(tmp_path, "../abc") == [] and boxes(tmp_path, "nope") == [] and boxes(tmp_path, "C:abc") == []
 
 
 def test_picked_person_survives_recollect(tmp_path):
@@ -250,3 +250,29 @@ def test_picked_person_survives_recollect(tmp_path):
     save_track(tmp_path, "v_000100", "5")
     carry_labels(tmp_path, "v", [{"id": "v_000101", "t_start": 10.1, "t_pass_end": 11.0, "frames": fr_new}], lambda s: None)
     assert load_tracks(tmp_path)["v_000101"] == "4"  # тот же человек под новым id траектории
+
+
+def test_broken_stream_keeps_old_data_and_labels(tmp_path):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    from soundmaster.learn.collect import process
+    from soundmaster.learn.label import load_labels, save_labels
+
+    data = tmp_path / "data"
+    data.mkdir()
+    old = {"video": "v", "version": 3, "candidates": [{"id": "v_000100", "t_start": 10.0, "t_end": 12.0}]}
+    (data / "v.json").write_text(json.dumps(old), encoding="utf-8")
+    save_labels(data, {"v_000100": "cut"})
+    with pytest.raises(RuntimeError):  # файла нет — ffmpeg падает; раньше это выглядело как «видео кончилось»
+        process(str(tmp_path / "missing.mp4"), "v", "Компот", data, tmp_path / "clips", lambda rgb, t: {},
+                progress=lambda s: None)
+    assert load_labels(data) == {"v_000100": "cut"}
+    assert json.loads((data / "v.json").read_text(encoding="utf-8")) == old
+
+
+def test_merge_does_not_chain_forever():
+    from soundmaster.learn.passes import PassCandidate, merge
+
+    walk = [PassCandidate(4.0 * k, 4.0 * k + 2.0, k, 0.5, 0.6) for k in range(10)]  # ходит по сцене 40 с
+    out = merge(walk, max_span=12.0)
+    assert len(out) > 1 and all(c.t_end - c.t_start <= 12.0 for c in out)
