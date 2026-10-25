@@ -330,9 +330,11 @@ def load_registry(path: str | Path) -> Registry:
     hotkeys: dict[str, str] = {}
     for e in effects.values():
         if e.hotkey:
-            _require(e.hotkey not in hotkeys, f"клавиша {e.hotkey!r} у {hotkeys.get(e.hotkey)} и {e.id}")
-            _require(e.hotkey.lower() not in RESERVED_KEYS, f"{e.id}: клавиша {e.hotkey!r} зарезервирована пультом")
-            hotkeys[e.hotkey] = e.id
+            # Пульт сравнивает клавиши без регистра — значит, и дубли ищем без регистра.
+            k = e.hotkey.lower()
+            _require(k not in hotkeys, f"клавиша {e.hotkey!r} у {hotkeys.get(k)} и {e.id}")
+            _require(k not in RESERVED_KEYS, f"{e.id}: клавиша {e.hotkey!r} зарезервирована пультом")
+            hotkeys[k] = e.id
 
     states: dict[str, MusicState] = {}
     for sid, raw in (data.get("music_states") or {}).items():
@@ -354,9 +356,10 @@ def load_registry(path: str | Path) -> Registry:
         _require(states[sid].file or states[sid].generator, f"{sid}: нужен file или generator")
         hk = states[sid].hotkey
         if hk:
-            _require(hk not in hotkeys, f"клавиша {hk!r} у {hotkeys.get(hk)} и {sid}")
-            _require(hk.lower() not in RESERVED_KEYS, f"{sid}: клавиша {hk!r} зарезервирована пультом")
-            hotkeys[hk] = sid
+            k = hk.lower()
+            _require(k not in hotkeys, f"клавиша {hk!r} у {hotkeys.get(k)} и {sid}")
+            _require(k not in RESERVED_KEYS, f"{sid}: клавиша {hk!r} зарезервирована пультом")
+            hotkeys[k] = sid
 
     scene_end_effect = g.get("scene_end_effect", "scene_end" if "scene_end" in effects else None)
     _require(scene_end_effect is None or scene_end_effect in effects,

@@ -185,3 +185,72 @@ def test_panel_genre_button_plays_pool(tmp_path):
         assert handle_command(app, {"cmd": "pool", "genre": "folk"})["result"] == "no_pool"
     finally:
         app.stop()
+
+
+def test_scene_cut_detector_built_even_when_mode_off(tmp_path):
+    """«Монтаж» можно включить с пульта: детектор есть при любой камере, режим проверяет контроллер."""
+    app = make_app(tmp_path)
+    app.cfg.raw["video"] = {"enabled": True, "camera": "0"}
+    app.cfg.raw["scene_cut"] = {**(app.cfg.raw.get("scene_cut") or {}), "mode": "OFF"}
+    app._build_listener(null_audio=False)
+    assert app.listener is not None and app.listener.scenecut is not None
+    assert "error" in _safe(app, {"cmd": "scene_cut_mode", "mode": "ON"})
+    assert handle_command(app, {"cmd": "scene_cut_mode", "mode": "auto"})["result"] == "AUTO"
+    app.journal.close()
+
+
+def _safe(app, msg):
+    try:
+        return handle_command(app, msg) or {}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+def test_panel_ticker_survives_dead_and_slow_clients(tmp_path, monkeypatch):
+    """Оборванный или зависший клиент пульта не останавливает tick (подсказки истекают, музыка грузится)."""
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from soundmaster.panel import server
+
+    app = make_app(tmp_path)
+    app.start()
+    ticks = []
+    orig_tick = app.controller.tick
+    monkeypatch.setattr(app.controller, "tick", lambda: (ticks.append(1), orig_tick()))
+    monkeypatch.setattr(server, "SEND_TIMEOUT", 0.2)
+    mode = {"v": "ok"}
+    orig_send = web.WebSocketResponse.send_str
+
+    async def send_str(self, data, compress=None):
+        if mode["v"] == "dead":
+            raise ConnectionResetError("клиент пропал")
+        if mode["v"] == "slow":
+            await asyncio.sleep(3600)
+        return await orig_send(self, data, compress)
+
+    monkeypatch.setattr(web.WebSocketResponse, "send_str", send_str)
+
+    async def main():
+        client = TestClient(TestServer(server.make_web_app(app)))
+        await client.start_server()
+        try:
+            for m in ("dead", "slow"):
+                ws = await client.ws_connect("/ws")
+                await asyncio.sleep(0.3)
+                mode["v"] = m
+                n0 = len(ticks)
+                await asyncio.sleep(0.8)
+                assert len(ticks) - n0 >= 8, m  # цикл пульта идёт дальше
+                mode["v"] = "ok"
+                await ws.close()
+            assert (await client.get("/library")).status == 200
+        finally:
+            await client.close()
+
+    try:
+        asyncio.run(main())
+    finally:
+        app.stop()

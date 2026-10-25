@@ -162,7 +162,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let ws, lib = { effects: [], music: [], pool: [] }, state = null;
-const keyMap = {};
+let keyMap = {};
 
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 function log(text) { const el = $("log"); el.textContent = (new Date().toLocaleTimeString() + "  " + text + "\n" + el.textContent).slice(0, 4000); }
@@ -176,7 +176,10 @@ function button(label, sub, key, cls) {
 }
 
 async function loadLibrary() {
-  lib = await (await fetch("/library")).json();
+  const r = await fetch("/library");
+  if (!r.ok) throw new Error(`/library: HTTP ${r.status}`);
+  lib = await r.json();
+  keyMap = {};  // библиотеку перечитываем после переподключения — клавиши собираем заново
   const eff = $("effects"); eff.innerHTML = "";
   for (const e of lib.effects) {
     const kind = e.channel === "sting" ? "отбивка" : ({sync: "синхронный", context: "по событию", background: "фон"}[e["class"]] || "");
@@ -263,18 +266,33 @@ function render(s) {
   $("gen").disabled = !M.generator;
 
   // Подсказки
-  const box = $("sugg"); box.innerHTML = "";
-  if (!s.suggestions.length) box.innerHTML = `<div class="empty">${auto ? "Нет подсказок" : "Нет подсказок — AI предлагает здесь музыку, эффекты и новую сцену"}</div>`;
+  // Строки по id: кнопки не пересоздаются каждые 200 мс, иначе нажатие «теряется» между mousedown и mouseup.
+  const box = $("sugg");
+  const ids = new Set(s.suggestions.map(it => String(it.id)));
+  box.querySelectorAll(".item[data-id]").forEach(row => { if (!ids.has(row.dataset.id)) row.remove(); });
+  let empty = box.querySelector(".empty");
+  if (s.suggestions.length) { if (empty) empty.remove(); }
+  else {
+    if (!empty) { empty = document.createElement("div"); empty.className = "empty"; box.appendChild(empty); }
+    empty.textContent = auto ? "Нет подсказок" : "Нет подсказок — AI предлагает здесь музыку, эффекты и новую сцену";
+  }
   const names = Object.fromEntries([...lib.effects, ...lib.music].map(x => [x.id, x.label]));
   for (const it of s.suggestions) {
-    const row = document.createElement("div");
-    row.className = "item " + it.kind;
-    const key = { effect: "S", music: "M", music_style: "M", scene_end: "B" }[it.kind];
+    let row = box.querySelector(`.item[data-id="${it.id}"]`);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "item " + it.kind;
+      row.dataset.id = it.id;
+      const key = { effect: "S", music: "M", music_style: "M", scene_end: "B" }[it.kind];
+      const text = document.createElement("span"); text.className = "grow";
+      const ok = document.createElement("button"); ok.textContent = key ? `Принять (${key})` : "Принять"; ok.dataset.act = "confirm";
+      const no = document.createElement("button"); no.textContent = "Отклонить"; no.dataset.act = "dismiss";
+      row.append(text, ok, no); box.appendChild(row);
+    }
     const title = it.kind === "scene_end" ? "Отбивка" : it.kind === "music_style" ? "Музыка" : it.kind === "new_scene" ? "Новая сцена" : (names[it.target] || it.target);
-    row.innerHTML = `<span class="grow"><b>${esc(title)}</b> · ${esc(it.confidence || "")} · ${esc(it.reason)} <span class="help">(${it.ttl} с)</span></span>`;
-    const ok = document.createElement("button"); ok.textContent = key ? `Принять (${key})` : "Принять"; ok.onclick = () => send({ cmd: "confirm", id: it.id });
-    const no = document.createElement("button"); no.textContent = "Отклонить"; no.onclick = () => send({ cmd: "dismiss", id: it.id });
-    row.append(ok, no); box.appendChild(row);
+    const html = `<b>${esc(title)}</b> · ${esc(it.confidence || "")} · ${esc(it.reason)} <span class="help">(${it.ttl} с)</span>`;
+    const text = row.querySelector(".grow");
+    if (text.innerHTML !== html) text.innerHTML = html;
   }
 
   const ab = $("armedBox");
@@ -313,7 +331,11 @@ function render(s) {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { $("conn").textContent = "На связи"; $("conn").className = "pill ok"; };
+  ws.onopen = () => {
+    $("conn").textContent = "На связи"; $("conn").className = "pill ok";
+    // Программу могли перезапустить с другим реестром — библиотеку перечитываем при каждом подключении.
+    loadLibrary().catch((e) => log("Библиотека не загрузилась: " + e.message));
+  };
   ws.onclose = () => { $("conn").textContent = "Нет связи с программой"; $("conn").className = "pill bad"; setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
@@ -335,12 +357,26 @@ $("fireBtn").onclick = () => send({ cmd: "fire" });
 $("disarmBtn").onclick = () => send({ cmd: "disarm" });
 $("brainBtn").onclick = () => send({ cmd: "brain", enabled: !(state && state.listen.brain && state.listen.brain.enabled) });
 $("cutMode").onchange = (e) => send({ cmd: "scene_cut_mode", mode: e.target.value });
+$("sugg").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-act]"), row = b && b.closest(".item[data-id]");
+  if (row) send({ cmd: b.dataset.act, id: Number(row.dataset.id) });
+});
+
+// Клавиша по физическому положению (ev.code): при русской раскладке ev.key — «ч», а не «x».
+function keyOf(ev) {
+  let m = /^Key([A-Z])$/.exec(ev.code || "");
+  if (m) return m[1].toLowerCase();
+  m = /^Digit([0-9])$/.exec(ev.code || "");
+  if (m) return m[1];
+  if (ev.code === "Period") return ".";
+  return (ev.key || "").toLowerCase();
+}
 
 document.addEventListener("keydown", (ev) => {
   if (ev.target.tagName === "SELECT") return;
   if (ev.target.tagName === "INPUT") { if (ev.key === "Enter") $("newScene").click(); return; }
   if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
-  const k = ev.key.toLowerCase();
+  const k = keyOf(ev);
   const actions = {
     escape: () => $("stopAll").click(), x: () => $("stopAi").click(), n: () => $("newScene").click(),
     a: () => $("modeBtn").click(), ".": () => $("mark").click(), f: () => $("fireBtn").click(),
@@ -353,7 +389,7 @@ document.addEventListener("keydown", (ev) => {
   if (keyMap[k]) { ev.preventDefault(); keyMap[k].click(); }
 });
 
-loadLibrary().then(connect);
+connect();  // библиотека загружается при подключении; без неё пульт всё равно на связи
 </script>
 </body>
 </html>

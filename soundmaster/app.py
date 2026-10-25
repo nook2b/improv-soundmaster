@@ -206,8 +206,9 @@ class App:
         if brain:
             self.scheduler = BrainScheduler(brain, self.controller, self.journal, self.clock,
                                             SchedulerConfig.from_dict(bcfg))
-        scenecut = (SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector")))
-                    if video_on and str(sc.get("mode", "SUGGEST")).upper() != "OFF" else None)
+        # Детектор строится при любой камере: режим OFF/SUGGEST/AUTO проверяет контроллер,
+        # и включённый с пульта «монтаж» начинает работать сразу.
+        scenecut = SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector"))) if video_on else None
         self.listener = Listener(
             self.controller, self.journal, self.clock, None,
             vad=EnergyVAD(ASR_RATE, **(listen.get("vad") or {})),

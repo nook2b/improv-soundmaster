@@ -12,6 +12,7 @@ from aiohttp import WSMsgType, web
 from ..app import App
 
 STATIC = Path(__file__).parent / "static"
+SEND_TIMEOUT = 1.0  # медленный клиент дольше этого — отключаем, цикл пульта его не ждёт
 
 
 def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -65,8 +66,7 @@ def handle_command(app: App, msg: dict[str, Any]) -> dict[str, Any] | None:
             app.scheduler.enabled = bool(msg["enabled"])
             app.journal.write("operator", action="brain_enabled", enabled=app.scheduler.enabled)
     elif cmd == "scene_cut_mode":
-        c.scene_cut_mode = str(msg["mode"]).upper()
-        app.journal.write("operator", action="scene_cut_mode", mode=c.scene_cut_mode)
+        return {"result": c.set_scene_cut_mode(str(msg["mode"]))}  # неизвестный режим → ошибка на пульт
     elif cmd == "mark":
         # Отметка техника «здесь было событие» — черновик эталонной дорожки для разметки.
         app.journal.write("mark", label=msg.get("label", ""), scene_id=c.state.scene_id)
@@ -103,6 +103,26 @@ def make_web_app(app: App) -> web.Application:
             clients.discard(ws)
         return ws
 
+    sending: dict[web.WebSocketResponse, asyncio.Task] = {}
+
+    async def send_one(ws: web.WebSocketResponse, data: str) -> None:
+        try:
+            await asyncio.wait_for(ws.send_str(data), SEND_TIMEOUT)
+        except Exception:  # noqa: BLE001 — оборванный или зависший клиент: отключаем, остальные работают
+            clients.discard(ws)
+            if not ws.closed:
+                asyncio.get_running_loop().create_task(ws.close())
+        finally:
+            sending.pop(ws, None)
+
+    def broadcast(data: str) -> None:
+        """Состояние всем клиентам в отдельных задачах: tick не ждёт сокеты и не падает от них."""
+        for ws in list(clients):
+            if ws.closed:
+                clients.discard(ws)
+            elif ws not in sending:  # предыдущее ещё не ушло — это состояние пропускаем
+                sending[ws] = asyncio.create_task(send_one(ws, data))
+
     async def ticker(_web_app: web.Application):
         async def loop():
             n = 0
@@ -113,16 +133,20 @@ def make_web_app(app: App) -> web.Application:
                     app.journal.write("error", where="tick", error=f"{type(e).__name__}: {e}")
                 n += 1
                 if n % 4 == 0 and clients:
-                    state = json.dumps({"type": "state", **app.status()}, ensure_ascii=False)
-                    for ws in list(clients):
-                        if not ws.closed:
-                            await ws.send_str(state)
+                    try:
+                        state = json.dumps({"type": "state", **app.status()}, ensure_ascii=False)
+                    except Exception as e:  # noqa: BLE001 — без состояния пульт поживёт, tick — нет
+                        app.journal.write("error", where="status", error=f"{type(e).__name__}: {e}")
+                    else:
+                        broadcast(state)
                 await asyncio.sleep(0.05)
 
         task = asyncio.create_task(loop())
         bg = app.attach_loop(asyncio.get_running_loop())
         yield
         task.cancel()
+        for t in list(sending.values()):
+            t.cancel()
         for t in bg:
             t.cancel()
         await app.detach_loop()
