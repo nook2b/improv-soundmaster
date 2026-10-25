@@ -91,6 +91,15 @@ def videos(data_dir: Path) -> list[dict]:
     return out
 
 
+def boxes(data_dir: Path, video: str) -> list[dict]:
+    """Рамки людей по роликам одного видео — для рамок поверх плеера: [{id, track, frames: [[t, {id: рамка}]]}]."""
+    p = data_dir / f"{video}.json"
+    if "/" in video or "\\" in video or ".." in video or not p.exists():
+        return []
+    d = json.loads(p.read_text(encoding="utf-8"))
+    return [{"id": c["id"], "track": str(c.get("track", -1)), "frames": c.get("frames", [])} for c in d.get("candidates", [])]
+
+
 def make_app(data_dir: Path, clip_dir: Path):
     from aiohttp import web
 
@@ -105,6 +114,9 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.json_response({"items": [{**i, "has_clip": (clip_dir / i["clip"]).exists()} for i in load_items(data_dir)],
                                   "labels": load_labels(data_dir), "manual": load_manual(data_dir),
                                   "videos": videos(data_dir)})
+
+    async def boxes_api(req):
+        return web.json_response({"boxes": boxes(data_dir, req.query.get("video", ""))})
 
     async def manual(req):
         body = await req.json()
@@ -130,7 +142,7 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.FileResponse(path)
 
     app = web.Application()
-    app.add_routes([web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual),
+    app.add_routes([web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual), web.get("/api/boxes", boxes_api),
                     web.get("/clips/{name}", clip)])
     return app
 
@@ -259,6 +271,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #here{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
 .player{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}
 .player>div,.player iframe{position:absolute;inset:0;width:100%;height:100%}
+#ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;border:0;background:transparent;border-radius:0}
 canvas{width:100%;display:block;border-radius:6px;cursor:pointer;background:var(--surface);border:1px solid var(--line)}
 #tlFull{height:44px}#tlZoom{height:64px}
 kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 4px}
@@ -267,7 +280,8 @@ kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-r
 </style></head><body><div class="wrap">
 <div class="row"><h1>Монтажи на таймлайне</h1><span class="grow"></span><a href="/">← Разметка по роликам</a></div>
 <div class="row"><select id="vid"></select><span class="grow"></span><span id="cur">0:00</span><span class="muted" id="near"></span></div>
-<div class="player"><div id="yt"></div></div>
+<div class="player"><div id="yt"></div><canvas id="ov"></canvas></div>
+<label class="muted"><input type="checkbox" id="others" checked> Показывать рамки всех людей (тонкие серые); жёлтая — на кого среагировала программа</label>
 <canvas id="tlFull" aria-label="Всё видео"></canvas>
 <canvas id="tlZoom" aria-label="±1 минута вокруг текущего места"></canvas>
 <div class="legend muted"><span><i style="background:var(--cut)"></i>монтаж</span><span><i style="background:var(--no)"></i>не монтаж</span>
@@ -290,7 +304,7 @@ kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-r
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 const $=id=>document.getElementById(id);
-let all=[],labels={},manual={},vids=[],video="",dur=1,player=null,ready=false,t=0;
+let all=[],labels={},manual={},vids=[],video="",dur=1,player=null,ready=false,t=0,bx=[];
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const fmt=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=String(s%60).padStart(2,"0");return h?`${h}:${String(m).padStart(2,"0")}:${x}`:`${m}:${x}`};
 const cands=()=>all.filter(x=>x.video===video).sort((a,b)=>a.t_start-b.t_start);
@@ -300,7 +314,16 @@ async function load(){const r=await fetch("/api/items");const d=await r.json();a
  const sel=$("vid"),cur=sel.value;sel.innerHTML=vids.map(v=>`<option value="${v.video}">${v.title.replace(/</g,"&lt;")}</option>`).join("");
  if(!vids.length){$("msg").textContent="Пока нет видео с YouTube — сначала соберите ролики (collect-scenecuts).";return}
  sel.value=cur||vids[0].video;if(sel.value!==video)openVideo(sel.value);draw()}
-function openVideo(v){video=v;const vd=vids.find(x=>x.video===v);dur=vd&&vd.seconds||1;
+async function loadBoxes(v){try{const r=await fetch("/api/boxes?video="+encodeURIComponent(v));bx=(await r.json()).boxes||[]}catch(e){bx=[]}}
+function frameAt(fr,tt){let lo=0,hi=fr.length-1;if(hi<0||tt<fr[0][0]-0.3||tt>fr[hi][0]+0.3)return null;
+ while(hi-lo>1){const m=(lo+hi)>>1;if(fr[m][0]<=tt)lo=m;else hi=m}return Math.abs(fr[lo][0]-tt)<=Math.abs(fr[hi][0]-tt)?fr[lo]:fr[hi]}
+function overlay(){const cv=$("ov"),w=cv.clientWidth,h=cv.clientHeight,dpr=devicePixelRatio||1;if(cv.width!==w*dpr||cv.height!==h*dpr){cv.width=w*dpr;cv.height=h*dpr}
+ const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+ const others=$("others").checked,seen=new Set();
+ for(const c of bx){const f=frameAt(c.frames,t);if(!f)continue;
+  for(const [k,b] of Object.entries(f[1])){const yellow=k===c.track;const key=k+":"+b.join(",");if(!yellow&&(!others||seen.has(key)))continue;seen.add(key);
+   g.strokeStyle=yellow?"#ffd400":"rgba(220,220,220,.55)";g.lineWidth=yellow?3:1;g.strokeRect(b[0]*w,b[1]*h,(b[2]-b[0])*w,(b[3]-b[1])*h)}}}
+function openVideo(v){video=v;loadBoxes(v);const vd=vids.find(x=>x.video===v);dur=vd&&vd.seconds||1;
  if(player&&ready)player.loadVideoById(v);else if(window.YT&&YT.Player)makePlayer()}
 function makePlayer(){if(player||!video)return;player=new YT.Player("yt",{videoId:video,playerVars:{rel:0,modestbranding:1,playsinline:1},
  events:{onReady:()=>{ready=true;const d=player.getDuration();if(d)dur=d;player.setPlaybackRate(+$("rate").value)}}})}
@@ -336,6 +359,8 @@ document.addEventListener("keydown",e=>{if(e.target.tagName==="SELECT"||e.metaKe
  else if(e.key==="ArrowRight"){e.preventDefault();seek(t+d)}else if(e.key==="ArrowLeft"){e.preventDefault();seek(t-d)}
  else if(k==="m"||k==="ь")here();else if(k==="n"||k==="т")jump(1);else if(k==="p"||k==="з")jump(-1);
  else if(e.key==="1")label("cut");else if(e.key==="6")label("cut_other");else if(e.key==="2")label("no");else if(e.key==="3")label("unsure")});
-setInterval(()=>{if(player&&ready&&player.getCurrentTime){const nt=player.getCurrentTime();if(Math.abs(nt-t)>0.05){t=nt;draw()}}},250);
+let lastDraw=0;
+(function tick(now){if(player&&ready&&player.getCurrentTime){const nt=player.getCurrentTime();if(Math.abs(nt-t)>0.02){t=nt;if(now-lastDraw>250){lastDraw=now;draw()}}}overlay();requestAnimationFrame(tick)})(0);
+$("others").onchange=overlay;
 addEventListener("resize",draw);setInterval(load,30000);load();
 </script></body></html>"""

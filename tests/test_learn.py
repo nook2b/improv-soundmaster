@@ -224,3 +224,15 @@ def test_watch_page_lists_youtube_videos(tmp_path):
     it = load_items(tmp_path)[0]
     assert (it["t_start"], it["t_end"]) == (10.0, 12.5)  # отрезок прохода — для таймлайна
     assert "youtube.com/iframe_api" in WATCH
+
+
+def test_boxes_for_player_overlay(tmp_path):
+    from soundmaster.learn.label import boxes
+
+    (tmp_path / "abc.json").write_text(json.dumps({"video": "abc", "title": "Компот", "candidates": [
+        {"id": "abc_000100", "track": 7, "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]}),
+        encoding="utf-8")
+    got = boxes(tmp_path, "abc")
+    assert got == [{"id": "abc_000100", "track": "7",
+                    "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]
+    assert boxes(tmp_path, "../abc") == [] and boxes(tmp_path, "nope") == []
