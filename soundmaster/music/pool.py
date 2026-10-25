@@ -102,20 +102,25 @@ async def record_lyria(preset: dict, seconds: float, api_key: str, timeout: floa
     client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
     need = int(seconds * SR) * 4
     buf = bytearray()
-    t0 = time.monotonic()
-    async with client.aio.live.music.connect(model="models/lyria-realtime-exp") as s:
-        await s.set_weighted_prompts(prompts=[types.WeightedPrompt(text=p["text"], weight=float(p["weight"]))
-                                              for p in preset["prompts"]])
-        if preset.get("config"):
-            await s.set_music_generation_config(config=types.LiveMusicGenerationConfig(**preset["config"]))
-        await s.play()
-        async for msg in s.receive():
-            for ch in (getattr(getattr(msg, "server_content", None), "audio_chunks", None) or []):
-                buf += ch.data
-            if len(buf) >= need:
-                break
-            if time.monotonic() - t0 > timeout:
-                raise TimeoutError(f"Lyria за {timeout:.0f} с дала {len(buf) / SR / 4:.1f} с звука")
+
+    async def receive() -> None:
+        async with client.aio.live.music.connect(model="models/lyria-realtime-exp") as s:
+            await s.set_weighted_prompts(prompts=[types.WeightedPrompt(text=p["text"], weight=float(p["weight"]))
+                                                  for p in preset["prompts"]])
+            if preset.get("config"):
+                await s.set_music_generation_config(config=types.LiveMusicGenerationConfig(**preset["config"]))
+            await s.play()
+            async for msg in s.receive():
+                for ch in (getattr(getattr(msg, "server_content", None), "audio_chunks", None) or []):
+                    buf.extend(ch.data)
+                if len(buf) >= need:
+                    break
+
+    # Ограничение по времени на весь приём: поток может и замолчать, не присылая сообщений.
+    try:
+        await asyncio.wait_for(receive(), timeout)
+    except asyncio.TimeoutError:
+        raise TimeoutError(f"Lyria за {timeout:.0f} с дала {len(buf) / SR / 4:.1f} с звука") from None
     return np.frombuffer(bytes(buf[:need]), "<i2").astype(np.float32).reshape(-1, 2) / 32768.0
 
 
@@ -248,7 +253,10 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
             name = f"{t.file} ({vocab.label(t.style)})"
             best: tuple[float, np.ndarray, dict] | None = None
             err = ""
+            rejected = False
             for _take in range(max(1, takes)):
+                if rejected:
+                    break
                 for attempt in (1, 2, 3):
                     if fatal:
                         err = fatal[0]
@@ -259,8 +267,9 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
                         if best is None or b < best[0]:
                             best = (b, x, meta)
                         break
-                    except PlanRejected as e:  # повтор того же описания не поможет
+                    except PlanRejected as e:  # повтор того же описания не поможет — и в других дублях
                         err = str(e)
+                        rejected = True
                         break
                     except ElevenFatal as e:  # ключ/кредиты: остальное тоже не запишется
                         err = str(e)
@@ -275,12 +284,18 @@ def make_pool(registry: Registry, seconds: float = 60.0, parallel: int = 4, only
                 report.errors.append((t.file, err))
                 progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА: {name} — {err}")
                 return
-            write_flac(path, normalize(best[1]))
-            # Как получена мелодия (промпт, сид, модель) — чтобы удачную можно было повторить.
-            path.with_suffix(".json").write_text(json.dumps(
-                {**best[2], "busyness": round(best[0], 2), "made": time.strftime("%Y-%m-%d %H:%M")},
-                ensure_ascii=False, indent=1),
-                encoding="utf-8")
+            try:
+                write_flac(path, normalize(best[1]))
+                # Как получена мелодия (промпт, сид, модель) — чтобы удачную можно было повторить.
+                path.with_suffix(".json").write_text(json.dumps(
+                    {**best[2], "busyness": round(best[0], 2), "made": time.strftime("%Y-%m-%d %H:%M")},
+                    ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+            except Exception as e:  # noqa: BLE001 — диск/кодек: остальные мелодии пишем дальше
+                err = f"{type(e).__name__}: {e}"
+                report.errors.append((t.file, err))
+                progress(f"[{len(report.made) + len(report.errors)}/{total}] ОШИБКА записи: {name} — {err}")
+                return
             report.made.append(t.file)
             progress(f"[{len(report.made) + len(report.errors)}/{total}] готово: {name}, {best[0]:.1f} нот/с")
 
