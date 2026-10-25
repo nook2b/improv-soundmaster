@@ -236,3 +236,17 @@ def test_boxes_for_player_overlay(tmp_path):
     assert got == [{"id": "abc_000100", "track": "7",
                     "frames": [[10.0, {"7": [0.1, 0.2, 0.3, 0.9], "3": [0.6, 0.3, 0.7, 0.8]}]]}]
     assert boxes(tmp_path, "../abc") == [] and boxes(tmp_path, "nope") == []
+
+
+def test_picked_person_survives_recollect(tmp_path):
+    from soundmaster.learn.collect import carry_labels
+    from soundmaster.learn.label import load_tracks, save_labels, save_track
+
+    fr_old = [[10.0 + k * 0.2, {"5": [0.1 + 0.05 * k, 0.2, 0.3 + 0.05 * k, 0.9], "9": [0.6, 0.3, 0.7, 0.8]}] for k in range(5)]
+    fr_new = [[10.0 + k * 0.2, {"2": [0.6, 0.3, 0.7, 0.8], "4": [0.1 + 0.05 * k, 0.2, 0.3 + 0.05 * k, 0.9]}] for k in range(5)]
+    (tmp_path / "v.json").write_text(json.dumps({"candidates": [
+        {"id": "v_000100", "t_start": 10.0, "t_end": 11.0, "frames": fr_old}]}), encoding="utf-8")
+    save_labels(tmp_path, {"v_000100": "cut"})
+    save_track(tmp_path, "v_000100", "5")
+    carry_labels(tmp_path, "v", [{"id": "v_000101", "t_start": 10.1, "t_pass_end": 11.0, "frames": fr_new}], lambda s: None)
+    assert load_tracks(tmp_path)["v_000101"] == "4"  # тот же человек под новым id траектории

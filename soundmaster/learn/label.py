@@ -16,7 +16,7 @@ import webbrowser
 from pathlib import Path
 
 LABELS = ("cut", "cut_other", "no", "unsure")
-SERVICE = ("labels.json", "manual.json")
+SERVICE = ("labels.json", "manual.json", "tracks.json")
 
 
 def load_items(data_dir: Path) -> list[dict]:
@@ -91,13 +91,34 @@ def videos(data_dir: Path) -> list[dict]:
     return out
 
 
+def load_tracks(data_dir: Path) -> dict[str, str]:
+    """Кого Иван указал как делающего монтаж, если программа выбрала не того: {id ролика: id траектории}."""
+    p = data_dir / "tracks.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def save_track(data_dir: Path, cid: str, track: str | None) -> dict[str, str]:
+    tracks = load_tracks(data_dir)
+    if track is None:
+        tracks.pop(cid, None)
+    else:
+        tracks[cid] = str(track)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    tmp = data_dir / "tracks.json.tmp"
+    tmp.write_text(json.dumps(dict(sorted(tracks.items())), ensure_ascii=False, indent=0), encoding="utf-8")
+    tmp.replace(data_dir / "tracks.json")
+    return tracks
+
+
 def boxes(data_dir: Path, video: str) -> list[dict]:
     """Рамки людей по роликам одного видео — для рамок поверх плеера: [{id, track, frames: [[t, {id: рамка}]]}]."""
     p = data_dir / f"{video}.json"
     if "/" in video or "\\" in video or ".." in video or not p.exists():
         return []
     d = json.loads(p.read_text(encoding="utf-8"))
-    return [{"id": c["id"], "track": str(c.get("track", -1)), "frames": c.get("frames", [])} for c in d.get("candidates", [])]
+    fixed = load_tracks(data_dir)
+    return [{"id": c["id"], "track": fixed.get(c["id"], str(c.get("track", -1))), "fixed": c["id"] in fixed,
+             "frames": c.get("frames", [])} for c in d.get("candidates", [])]
 
 
 def make_app(data_dir: Path, clip_dir: Path):
@@ -117,6 +138,17 @@ def make_app(data_dir: Path, clip_dir: Path):
 
     async def boxes_api(req):
         return web.json_response({"boxes": boxes(data_dir, req.query.get("video", ""))})
+
+    async def track(req):
+        body = await req.json()
+        try:
+            cid = str(body["id"])
+            save_track(data_dir, cid, body.get("track"))
+            if body.get("track") is not None:
+                save_label(data_dir, cid, "cut")  # указали, кто делал монтаж, — значит, монтаж
+        except (KeyError, ValueError) as e:
+            return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"ok": True})
 
     async def manual(req):
         body = await req.json()
@@ -142,7 +174,7 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.FileResponse(path)
 
     app = web.Application()
-    app.add_routes([web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual), web.get("/api/boxes", boxes_api),
+    app.add_routes([web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual), web.get("/api/boxes", boxes_api), web.post("/api/track", track),
                     web.get("/clips/{name}", clip)])
     return app
 
@@ -272,6 +304,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .player{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}
 .player>div,.player iframe{position:absolute;inset:0;width:100%;height:100%}
 #ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;border:0;background:transparent;border-radius:0}
+#ov.pick{pointer-events:auto;cursor:crosshair;background:rgba(0,0,0,.15)}#bPick[aria-pressed=true]{background:#ffd400;color:#000;border-color:#ffd400}
 canvas{width:100%;display:block;border-radius:6px;cursor:pointer;background:var(--surface);border:1px solid var(--line)}
 #tlFull{height:44px}#tlZoom{height:64px}
 kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 4px}
@@ -289,6 +322,7 @@ kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-r
 <span><i style="background:var(--manual)"></i>отмечено вручную (появится после сбора)</span></div>
 <div class="row">
 <button id="here">Монтаж здесь <kbd>M</kbd></button>
+<button id="bPick" aria-pressed="false" title="Монтаж есть, но жёлтая рамка не на том: поставьте паузу и кликните по нужному человеку">Выбрать человека <kbd>B</kbd></button>
 <span class="muted">Ближайший ролик:</span>
 <button class="cut" id="bCut">Монтаж <kbd>1</kbd></button>
 <button class="cut" id="bCut2">Рамка мимо <kbd>6</kbd></button>
@@ -317,12 +351,24 @@ async function load(){const r=await fetch("/api/items");const d=await r.json();a
 async function loadBoxes(v){try{const r=await fetch("/api/boxes?video="+encodeURIComponent(v));bx=(await r.json()).boxes||[]}catch(e){bx=[]}}
 function frameAt(fr,tt){let lo=0,hi=fr.length-1;if(hi<0||tt<fr[0][0]-0.3||tt>fr[hi][0]+0.3)return null;
  while(hi-lo>1){const m=(lo+hi)>>1;if(fr[m][0]<=tt)lo=m;else hi=m}return Math.abs(fr[lo][0]-tt)<=Math.abs(fr[hi][0]-tt)?fr[lo]:fr[hi]}
+let pick=false;
+function setPick(on){pick=on&&!!nearest();$("ov").classList.toggle("pick",pick);$("bPick").setAttribute("aria-pressed",pick);
+ if(pick){if(player&&ready)player.pauseVideo();$("msg").textContent="Кликните по рамке человека, который делает монтаж (Esc — отмена)"}}
+$("bPick").onclick=()=>setPick(!pick);
+$("ov").addEventListener("click",async e=>{if(!pick)return;const n=nearest();const c=bx.find(x=>x.id===(n&&n.id));if(!c){setPick(false);return}
+ const r=e.currentTarget.getBoundingClientRect(),px=(e.clientX-r.left)/r.width,py=(e.clientY-r.top)/r.height;
+ const f=frameAt(c.frames,t);let hit=null;
+ if(f)for(const [k,b] of Object.entries(f[1]))if(px>=b[0]&&px<=b[2]&&py>=b[1]&&py<=b[3]){const a=(b[2]-b[0])*(b[3]-b[1]);if(!hit||a<hit.a)hit={k,a}}
+ if(!hit){$("msg").textContent="Здесь нет рамки — кликните внутрь рамки человека";return}
+ const res=await fetch("/api/track",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id,track:hit.k})});
+ if(!res.ok){$("msg").textContent="Не сохранилось";return}c.track=hit.k;c.fixed=true;labels[c.id]="cut";setPick(false);
+ $("msg").textContent=`Ролик ${fmt(n.t_start)}: монтаж, человек выбран вручную`;draw()});
 function overlay(){const cv=$("ov"),w=cv.clientWidth,h=cv.clientHeight,dpr=devicePixelRatio||1;if(cv.width!==w*dpr||cv.height!==h*dpr){cv.width=w*dpr;cv.height=h*dpr}
  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
  const others=$("others").checked,seen=new Set();
  for(const c of bx){const f=frameAt(c.frames,t);if(!f)continue;
-  for(const [k,b] of Object.entries(f[1])){const yellow=k===c.track;const key=k+":"+b.join(",");if(!yellow&&(!others||seen.has(key)))continue;seen.add(key);
-   g.strokeStyle=yellow?"#ffd400":"rgba(220,220,220,.55)";g.lineWidth=yellow?3:1;g.strokeRect(b[0]*w,b[1]*h,(b[2]-b[0])*w,(b[3]-b[1])*h)}}}
+  for(const [k,b] of Object.entries(f[1])){const yellow=k===c.track;const key=k+":"+b.join(",");if(!yellow&&((!others&&!pick)||seen.has(key)))continue;seen.add(key);
+   g.strokeStyle=yellow?"#ffd400":pick?"rgba(255,255,255,.95)":"rgba(220,220,220,.55)";g.lineWidth=yellow?3:pick?2:1;g.strokeRect(b[0]*w,b[1]*h,(b[2]-b[0])*w,(b[3]-b[1])*h)}}}
 function openVideo(v){video=v;loadBoxes(v);const vd=vids.find(x=>x.video===v);dur=vd&&vd.seconds||1;
  if(player&&ready)player.loadVideoById(v);else if(window.YT&&YT.Player)makePlayer()}
 function makePlayer(){if(player||!video)return;player=new YT.Player("yt",{videoId:video,playerVars:{rel:0,modestbranding:1,playsinline:1},
@@ -338,7 +384,7 @@ function draw(){for(const [id,zoom] of [["tlFull",false],["tlZoom",true]]){const
  g.fillStyle=css("--fg");const xc=X(t);g.fillRect(xc-1,0,2,h);
  if(!zoom){g.strokeStyle=css("--accent");g.strokeRect(X(t-60),1,X(t+60)-X(t-60),h-2)}}
  $("cur").textContent=fmt(t);const n=nearest();$("near").textContent=n?`· ролик ${fmt(n.t_start)}`:"· рядом роликов нет";
- [["bCut","cut"],["bCut2","cut_other"],["bNo","no"],["bUnsure","unsure"]].forEach(([b,k])=>{$(b).disabled=!n;$(b).setAttribute("aria-pressed",!!n&&labels[n.id]===k)})}
+ [["bCut","cut"],["bCut2","cut_other"],["bNo","no"],["bUnsure","unsure"]].forEach(([b,k])=>{$(b).disabled=!n;$(b).setAttribute("aria-pressed",!!n&&labels[n.id]===k)});$("bPick").disabled=!n}
 function seek(s){s=Math.max(0,Math.min(dur-1,s));t=s;if(player&&ready)player.seekTo(s,true);draw()}
 for(const [id,zoom] of [["tlFull",false],["tlZoom",true]])$(id).addEventListener("click",e=>{const r=e.currentTarget.getBoundingClientRect(),f=(e.clientX-r.left)/r.width;
  seek(zoom?t-60+f*120:f*dur)});
@@ -357,7 +403,7 @@ $("rate").onchange=e=>{if(player&&ready)player.setPlaybackRate(+e.target.value)}
 document.addEventListener("keydown",e=>{if(e.target.tagName==="SELECT"||e.metaKey||e.ctrlKey)return;const k=e.key.toLowerCase(),d=e.shiftKey?1:5;
  if(k===" "){e.preventDefault();if(player&&ready)(player.getPlayerState()===1?player.pauseVideo():player.playVideo())}
  else if(e.key==="ArrowRight"){e.preventDefault();seek(t+d)}else if(e.key==="ArrowLeft"){e.preventDefault();seek(t-d)}
- else if(k==="m"||k==="ь")here();else if(k==="n"||k==="т")jump(1);else if(k==="p"||k==="з")jump(-1);
+ else if(k==="m"||k==="ь")here();else if(k==="b"||k==="и")setPick(!pick);else if(e.key==="Escape")setPick(false);else if(k==="n"||k==="т")jump(1);else if(k==="p"||k==="з")jump(-1);
  else if(e.key==="1")label("cut");else if(e.key==="6")label("cut_other");else if(e.key==="2")label("no");else if(e.key==="3")label("unsure")});
 let lastDraw=0;
 (function tick(now){if(player&&ready&&player.getCurrentTime){const nt=player.getCurrentTime();if(Math.abs(nt-t)>0.02){t=nt;if(now-lastDraw>250){lastDraw=now;draw()}}}overlay();requestAnimationFrame(tick)})(0);

@@ -303,25 +303,52 @@ def first_seen(track: int, log: list[tuple[float, dict[int, Box]]], t_start: flo
     return seen
 
 
+def same_person(old: dict, track: str, new: dict) -> str | None:
+    """id траектории в новом кандидате, рамка которой больше всего совпадает с указанной в старом."""
+    def iou(a: list[float], b: list[float]) -> float:
+        w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+        h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+        inter = w * h
+        return inter / max(1e-9, (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+    score: dict[str, float] = {}
+    nf = new.get("frames", [])
+    for t, bx in old.get("frames", []):
+        if track not in bx or not nf:
+            continue
+        nt, nbx = min(nf, key=lambda f: abs(f[0] - t))
+        if abs(nt - t) > 0.3:
+            continue
+        for k, b in nbx.items():
+            score[k] = score.get(k, 0.0) + iou(bx[track], b)
+    return max(score, key=score.get) if score and max(score.values()) > 0 else None
+
+
 def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[str], None] = print) -> None:
     """Перенести разметку прошлого сбора этого видео на новых кандидатов (по пересечению по времени)."""
-    from .label import load_labels, save_labels
+    from .label import load_labels, load_tracks, save_labels, save_track
 
     old_path = out_dir / f"{vid}.json"
     labels = load_labels(out_dir)
     if not old_path.exists():
         return
     old = json.loads(old_path.read_text(encoding="utf-8")).get("candidates", [])
+    fixed = load_tracks(out_dir)
     old_lab = [(o, labels.pop(o["id"])) for o in old if o["id"] in labels]
     if not old_lab:
         return
     moved = lost_cuts = 0
     for o, lab in old_lab:
         hit = next((n for n in new if n["t_start"] - 1.0 <= o["t_end"] and o["t_start"] <= n["t_pass_end"] + 1.0), None)
-        if hit and (hit["id"] not in labels or lab == "cut"):
+        is_cut = lab in ("cut", "cut_other")
+        if hit and (hit["id"] not in labels or is_cut):
             labels[hit["id"]] = lab
             moved += 1
-        elif lab == "cut" and not hit:
+            if o["id"] in fixed:  # человек, указанный вручную: та же рамка в новом сборе (id траекторий меняются)
+                tr = same_person(o, fixed[o["id"]], hit)
+                if tr is not None:
+                    save_track(out_dir, hit["id"], tr)
+        elif is_cut and not hit:
             lost_cuts += 1
             progress(f"  монтаж на {int(o['t_start'] // 60)}:{int(o['t_start'] % 60):02d} не прошёл новый отбор")
     save_labels(out_dir, labels)
