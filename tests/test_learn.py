@@ -276,3 +276,44 @@ def test_merge_does_not_chain_forever():
     walk = [PassCandidate(4.0 * k, 4.0 * k + 2.0, k, 0.5, 0.6) for k in range(10)]  # ходит по сцене 40 с
     out = merge(walk, max_span=12.0)
     assert len(out) > 1 and all(c.t_end - c.t_start <= 12.0 for c in out)
+
+
+def test_git_sync_commits_pulls_and_pushes(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("нет git")
+    from soundmaster.learn.sync import GitSync
+
+    def git(*a, cwd):
+        subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True)
+
+    remote = tmp_path / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    ivan, claude = tmp_path / "ivan", tmp_path / "claude"
+    for d in (ivan, claude):
+        git("clone", "-q", str(remote), str(d), cwd=tmp_path)
+        git("config", "user.email", "t@t", cwd=d)
+        git("config", "user.name", "t", cwd=d)
+    (claude / "code.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", ".", cwd=claude)
+    git("commit", "-q", "-m", "код", cwd=claude)
+    git("push", "-q", "-u", "origin", "main", cwd=claude)
+    git("pull", "-q", "origin", "main", cwd=ivan)
+    git("branch", "-q", "--set-upstream-to=origin/main", cwd=ivan)
+    (claude / "code.py").write_text("x = 2\n", encoding="utf-8")  # Claude успел отправить новый код
+    git("commit", "-q", "-am", "код 2", cwd=claude)
+    git("push", "-q", cwd=claude)
+
+    data = ivan / "data" / "scenecut"
+    data.mkdir(parents=True)
+    (data / "labels.json").write_text('{"a": "cut"}', encoding="utf-8")
+    (ivan / "notes.txt").write_text("личное", encoding="utf-8")  # не из data/scenecut — не отправляется
+    sync = GitSync(data)
+    assert sync.enabled and sync.changed()
+    r = sync.push()
+    assert r.ok, r.message
+    assert not sync.changed()
+    git("pull", "-q", cwd=claude)
+    assert (claude / "data" / "scenecut" / "labels.json").exists()
+    assert not (claude / "notes.txt").exists()
+    assert (ivan / "code.py").read_text(encoding="utf-8") == "x = 2\n"  # забрал и правки Claude
+    assert sync.push().message == "всё отправлено"
