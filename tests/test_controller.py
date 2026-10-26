@@ -401,3 +401,143 @@ def test_stop_ai_silences_transition_music_too(system, clock):
     assert c.start_neutral_music()
     c.stop_ai_sound()
     assert c.music.current("music") is None and not c.state.automation_enabled
+
+
+# ---- взведение: режим, автоматика и вход проверяются и при срабатывании -----------------------
+def arm_ai(c, effect="camera_shutter"):
+    return c.arm(effect, source="ai", scene_id=c.state.scene_id, connection_id=c.state.connection_id)
+
+
+def test_armed_auto_effect_fires_with_clean_feed(system, clock):
+    c = system[0](clean=True)
+    c.set_mode("camera_shutter", "AUTO")
+    assert arm_ai(c).blocked_by is None
+    d = c.fire("keyword", word="чик")
+    assert d.result == "played" and d.voice_id is not None
+
+
+def test_armed_without_clean_feed_is_shadow(system, clock):
+    c = system[0](clean=False)  # только рекордер: автозапуск эффектов закрыт
+    c.set_mode("camera_shutter", "AUTO")
+    assert arm_ai(c).blocked_by == "shadow"
+    d = c.fire("keyword", word="чик")
+    assert (d.result, d.blocked_by) == ("suggested", "shadow")
+
+
+@pytest.mark.parametrize("change", ["manual_mode", "suggest", "no_feed"])
+def test_change_after_arm_turns_fire_into_suggestion(system, clock, change):
+    c = system[0](clean=True)
+    c.set_mode("camera_shutter", "AUTO")
+    assert arm_ai(c).blocked_by is None
+    if change == "manual_mode":
+        c.set_automation(False)
+    elif change == "suggest":
+        c.set_mode("camera_shutter", "SUGGEST")
+    else:
+        c.clean_actor_feed = False
+    _, engine, mixer, _ = system
+    d = c.fire("keyword", word="чик")
+    assert (d.result, d.blocked_by) == ("suggested", "shadow")
+    assert not any(owner == "ai" for *_, owner in mixer.playing)
+
+
+def test_mode_off_after_arm_blocks_fire(system, clock):
+    c = system[0](clean=True)
+    c.set_mode("camera_shutter", "AUTO")
+    arm_ai(c)
+    c.set_mode("camera_shutter", "OFF")
+    assert (c.fire("keyword", word="чик").blocked_by) == "mode_off"
+
+
+# ---- «Стоп AI» и ручная музыка, которая ещё грузится ---------------------------------------
+class _Gen:
+    """Генератор-заглушка: всегда исправен, буфер не заполняет (музыка «ждёт предзаполнения»)."""
+
+    name, healthy, error = "fake", True, None
+
+    def start(self, preset, buf):
+        pass
+
+    def update(self, preset, cut=False):
+        pass
+
+    def stop(self):
+        pass
+
+
+def with_gen(c):
+    c.music.generator = _Gen()
+    c.music.use_generator = True
+    return c
+
+
+def test_stop_ai_cancels_pending_generator_music(system, clock):
+    c = with_gen(auto(system))
+    assert style(c, NOIR, clock).result == "started"
+    assert "music" in c.music._pending  # ещё набирает буфер
+    c.stop_ai_sound()
+    assert c.music.current("music") is None and not c.music._pending
+
+
+def test_stop_ai_cancels_pool_loading(system, clock):
+    from soundmaster.registry import MusicState
+
+    c = auto(system)
+    st = MusicState("pool:noir/1", "music", "Нуар", None, "pool/noir_1.flac")
+    assert c.music._play_pool_track(st, "ai") == "pool_loading"
+    c.stop_ai_sound()
+    assert c.music.current("music") is None and c.music._pool_pending is None
+
+
+def test_stop_ai_keeps_manual_music_that_is_loading(system, clock):
+    from soundmaster.registry import MusicState
+
+    c = auto(system)
+    style(c, NOIR, clock)  # играет AI (файл-резерв)
+    st = MusicState("pool:noir/1", "music", "Нуар", None, "pool/noir_1.flac")
+    c.music._play_pool_track(st, "manual")  # техник нажал жанр — запись грузится
+    c.stop_ai_sound()
+    assert c.music._pool_pending and c.music._pool_pending[1] == "manual"
+    assert "music" not in c.music.active  # музыка AI погасла
+
+
+def test_ai_does_not_override_manual_music_while_it_loads(system, clock):
+    c = with_gen(auto(system))
+    c.manual_music("romantic")
+    assert c.music._pending["music"][1] == "manual"  # генератор ещё набирает буфер
+    d = style(c, NOIR, clock)
+    assert (d.result, d.blocked_by) == ("blocked", "manual_music")
+    assert c.release_music()  # ждущий ручной выбор тоже можно вернуть автоматике
+    assert c.music._pending["music"][1] == "system"
+    assert style(c, NOIR, clock).result == "started"
+
+
+def test_scene_cut_mode_validated(system):
+    make = system[0]
+    with pytest.raises(ValueError):
+        from soundmaster.controller import Controller
+
+        c = make()
+        Controller(c.registry, c.engine, c.music, c.journal, c.clock, False, scene_cut_mode="ON")
+    c = make()
+    assert c.set_scene_cut_mode("auto") == "AUTO"
+    with pytest.raises(ValueError):
+        c.set_scene_cut_mode("maybe")
+    assert c.scene_cut_mode == "AUTO"
+
+
+def test_hotkey_duplicates_are_case_insensitive(tmp_path):
+    from pathlib import Path
+
+    import yaml
+
+    from soundmaster.registry import RegistryError, load_registry
+
+    root = Path(__file__).resolve().parent.parent
+    raw = yaml.safe_load((root / "config" / "registry.yaml").read_text(encoding="utf-8"))
+    raw["effects"]["doorbell"]["hotkey"] = "q"
+    raw["effects"]["phone_ring"]["hotkey"] = "Q"  # пульт не различает регистр — это дубль
+    p = tmp_path / "registry.yaml"
+    p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(RegistryError, match="клавиша"):
+        load_registry(p)

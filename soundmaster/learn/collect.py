@@ -34,6 +34,7 @@ from .passes import Box, FastTracker, PassCandidate, PassFinder, is_scenecut_can
 W, H = 640, 360  # размер кадров для анализа и роликов
 VERSION = 3  # версия отбора/роликов: данные старой версии собираются заново (разметка переносится по времени)
 BEFORE, AFTER = 3.0, 7.0  # сколько секунд до и после прохода смотреть, кто стоит на сцене
+MAX_SPAN = 12.0  # кандидат (с учётом слияния соседних) не длиннее — иначе не помещается в журнал рамок
 MAX_CLIP = 7.0  # ролик для разметки: ~5–7 с, с момента, как человек появился в кадре (Иван: 8 с — много)
 WIDE_BEFORE = 5.0  # «Шире» на странице разметки: столько секунд до прохода и AFTER после —
 # видно, вышел ли человек из-за кулис и ушли ли потом актёры
@@ -100,9 +101,14 @@ def frames(source: str, fps: float) -> Iterator[tuple[float, np.ndarray]]:
                 break
             yield i / fps, np.frombuffer(raw, np.uint8).reshape(H, W, 3)
             i += 1
+        # конец потока: убедиться, что это конец видео, а не ошибка YouTube/ffmpeg
+        codes = [p.wait(timeout=60) for p in reversed(procs)]
+        if any(code != 0 for code in codes):
+            raise RuntimeError(f"поток оборвался на {i / fps / 60:.0f} мин (коды завершения {codes})")
     finally:
         for p in procs:
-            p.kill()
+            if p.poll() is None:
+                p.kill()
             p.wait()
 
 
@@ -184,9 +190,10 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     рамки рисуются поверх; ролики нужны только для записей не с YouTube).
     """
     manual_q = sorted(manual or [])
-    ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * (WIDE_BEFORE + AFTER + 14)))
-    log: deque[tuple[float, dict[int, Box]]] = deque(
-        maxlen=int(fps / detect_every * (BEFORE + AFTER + MAX_CLIP + 10)))
+    # кандидат не длиннее MAX_SPAN (merge), плюс запас до/после: журнал рамок и кадры должны его вмещать
+    keep_s = WIDE_BEFORE + MAX_SPAN + AFTER + 6
+    ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * keep_s) if save_clips else 1)
+    log: deque[tuple[float, dict[int, Box]]] = deque(maxlen=int(fps / detect_every * keep_s))
     finder, pixel = PassFinder(), SceneCutDetector(LOOSE_PIXEL)
     pending: list[PassCandidate] = []
     done: list[dict] = []
@@ -205,7 +212,11 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
         seen = first_seen(c.track, list(log), c.t_start)
         a = min(seen, c.t_start) - 1.0  # с момента, как человек появился (вышел из-за кулис)
         b = min(max(end + 1.5, a + 5.0), a + MAX_CLIP)
-        cid = f"{vid}_{int(c.t_start * 10):06d}"
+        n = int(c.t_start * 10)
+        ids = {d["id"] for d in done}
+        while f"{vid}_{n:06d}" in ids:  # два кандидата с одним началом — разные id
+            n += 1
+        cid = f"{vid}_{n:06d}"
         boxes = list(log)
 
         def shots(a: float, b: float) -> list[np.ndarray]:
@@ -218,9 +229,9 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
                     imgs.append(img)
             return imgs
 
-        n_frames = sum(1 for ft, _ in ring if a <= ft <= b)
-        if n_frames < fps:  # начало видео — отрезок слишком короткий
-            return
+        if a < 0.5 or not any(lt >= b - 0.5 for lt, _ in log):  # самое начало/конец записи — отрезка нет
+            if not forced:
+                return
         clip = wide_clip = None
         if save_clips:
             imgs = shots(a, b)
@@ -238,6 +249,19 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
                                                 if bx[3] - bx[1] > 0.12}]  # мелкие фигуры в глубине не нужны
                                 for lt, bxs in window]})
 
+    def add_manual(tm: float) -> None:
+        """Ручная отметка: тот же кандидат, если программа уже нашла проход в этом месте (как кнопка M
+        на странице — в пределах 4 с от начала прохода), иначе — новый, через pending (полное окно «после»)."""
+        hit = next((d for d in done if abs(d["t_start"] - tm) < 4), None)
+        near = [c for c in pending if abs(c.t_start - tm) < 4]
+        if hit:
+            hit["sources"] = sorted(set(hit["sources"]) | {"manual"})
+        elif near:
+            for c in near:
+                c.sources = sorted(set(c.sources) | {"manual"})
+        else:
+            pending.append(manual_candidate(tm, list(log)))
+
     for i, (t, rgb) in enumerate(frames(source, fps)):
         ring.append((t, rgb))
         ev = pixel.push(t, rgb)
@@ -247,19 +271,10 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             boxes = detector(rgb, t)
             log.append((t, boxes))
             pending += finder.push(t, boxes)
-        while manual_q and t >= manual_q[0] + AFTER:
-            tm = manual_q.pop(0)
-            hit = next((d for d in done if d["t_clip"] - 2 <= tm <= d["t_pass_end"] + 2), None)
-            near = [c for c in pending if c.t_start - 2 <= tm <= c.t_end + 2]
-            if hit:
-                hit["sources"] = sorted(set(hit["sources"]) | {"manual"})
-            elif near:
-                for c in near:
-                    c.sources = sorted(set(c.sources) | {"manual"})
-            else:
-                finish(manual_candidate(tm, list(log)))
+        while manual_q and t >= manual_q[0] + 4.0:
+            add_manual(manual_q.pop(0))
         if pending:
-            pending = merge(pending)
+            pending = merge(pending, max_span=MAX_SPAN)
             for c in [c for c in pending if t >= c.t_end + AFTER]:
                 pending.remove(c)
                 finish(c)
@@ -269,11 +284,14 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             left = f", осталось ~{(duration - t) / speed / 60:.0f} мин" if duration else ""
             progress(f"  {title[:40]}: {t / 60:.0f} мин, кандидатов {len(done)} (отсеяно {skipped}), "
                      f"скорость ×{speed:.1f}{left}")
-    for c in merge(pending):
-        finish(c)
     for tm in manual_q:  # отмечено у самого конца записи
         if tm <= t:
-            finish(manual_candidate(tm, list(log)))
+            add_manual(tm)
+    for c in merge(pending, max_span=MAX_SPAN):
+        finish(c)
+    if duration and t < duration - 60:
+        # поток кончился раньше видео: не трогаем прошлый сбор и разметку этого видео
+        raise RuntimeError(f"поток оборвался на {t / 60:.0f} мин из {duration / 60:.0f}")
     result = {"video": vid, "title": title, "version": VERSION, "detector": getattr(detector, "name", ""),
               "source": source if is_url(source) else Path(source).name, "seconds": round(t, 1), "fps": fps,
               "detect_fps": fps / detect_every, "size": [W, H], "made": time.strftime("%Y-%m-%d %H:%M"),
@@ -283,7 +301,7 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     from .label import load_labels, save_labels
 
     labels = load_labels(out_dir)
-    marked = [c["id"] for c in done if "manual" in c["sources"] and labels.get(c["id"]) not in ("cut", "cut_other")]
+    marked = [c["id"] for c in done if "manual" in c["sources"] and c["id"] not in labels]
     if marked:
         labels.update({cid: "cut" for cid in marked})
         save_labels(out_dir, labels)
@@ -352,10 +370,13 @@ def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[s
             labels[hit["id"]] = lab
             moved += 1
             if o["id"] in fixed:  # человек, указанный вручную: та же рамка в новом сборе (id траекторий меняются)
+                save_track(out_dir, o["id"], None)
                 tr = same_person(o, fixed[o["id"]], hit)
                 if tr is not None:
                     save_track(out_dir, hit["id"], tr)
-        elif is_cut and not hit:
+        elif o["id"] in fixed:
+            save_track(out_dir, o["id"], None)
+        if is_cut and not hit:
             lost_cuts += 1
             progress(f"  монтаж на {int(o['t_start'] // 60)}:{int(o['t_start'] % 60):02d} не прошёл новый отбор")
     save_labels(out_dir, labels)
@@ -408,12 +429,8 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
                         manual=manual.get(e["id"], []), save_clips=save_clips,
                         duration=e["duration"])
         except Exception as ex:  # noqa: BLE001 — одно видео не должно останавливать остальные
-            progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]}")
-            continue
-        if r["seconds"] < 0.5 * e["duration"]:
-            progress(f"  поток оборвался на {r['seconds'] / 60:.0f} мин из {e['duration'] / 60:.0f} — "
-                     "видео будет пройдено заново при следующем запуске")
-            (out_dir / f"{e['id']}.json").unlink()
+            progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]} — прошлый сбор и разметка этого видео "
+                     "не тронуты, при следующем запуске видео будет пройдено заново")
             continue
         progress(f"  готово: кандидатов {len(r['candidates'])}")
         results.append(r)

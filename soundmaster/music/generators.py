@@ -152,9 +152,21 @@ class LyriaRealtimeGenerator(MusicGenerator):
         self._preset = dict(preset)
         self._stopping = False
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, name="lyria", daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, args=(self._loop,), name="lyria", daemon=True)
         self._thread.start()
         asyncio.run_coroutine_threadsafe(self._main(), self._loop)
+
+    @staticmethod
+    def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:  # noqa: BLE001
+                pass
+            loop.close()
 
     async def _set_prompts(self, prompts: list[dict[str, Any]]) -> None:
         from google.genai import types  # type: ignore
@@ -200,6 +212,7 @@ class LyriaRealtimeGenerator(MusicGenerator):
         failures = 0
         while not self._stopping:
             try:
+                session = None
                 async with client.aio.live.music.connect(model=self.MODEL) as session:
                     self._session = session
                     await self._apply(self._preset)
@@ -214,7 +227,8 @@ class LyriaRealtimeGenerator(MusicGenerator):
             except Exception as e:  # noqa: BLE001
                 last = f"{type(e).__name__}: {e}"
             finally:
-                self._session = None
+                if self._session is session:  # после перезапуска сессия уже может быть новой
+                    self._session = None
             if self._stopping:
                 return
             failures += 1
@@ -235,16 +249,37 @@ class LyriaRealtimeGenerator(MusicGenerator):
         self._ramp = asyncio.ensure_future(self._apply(preset, previous, cut))
 
     def stop(self) -> None:
+        """Не блокирует вызывающий (asyncio-цикл пульта): остановка идёт в цикле Lyria."""
         self._stopping = True
-        if self._session and self._loop:
-            try:
-                asyncio.run_coroutine_threadsafe(self._session.stop(), self._loop).result(timeout=1.0)
-            except Exception:  # noqa: BLE001 — при остановке ошибка сети не важна
-                pass
         if self.buffer:
             self.buffer.closed = True
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        loop, session = self._loop, self._session
+        self._loop, self._session, self._ramp = None, None, None
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._shutdown(session), loop)
+        except RuntimeError:  # цикл уже закрыт
+            pass
+
+    @staticmethod
+    async def _shutdown(session) -> None:
+        """В цикле Lyria: остановить поток, отменить _main и переход (закрывает websocket), остановить цикл."""
+        if session is not None:
+            try:
+                await asyncio.wait_for(session.stop(), 1.0)
+            except BaseException:  # noqa: BLE001 — при остановке ошибка сети не важна
+                pass
+        me = asyncio.current_task()
+        tasks = [t for t in asyncio.all_tasks() if t is not me]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 3.0)
+            except BaseException:  # noqa: BLE001 — не закрылось вовремя: цикл всё равно останавливаем
+                pass
+        asyncio.get_running_loop().stop()
 
 
 def make_generator(name: str | None, sample_rate: int) -> MusicGenerator | None:

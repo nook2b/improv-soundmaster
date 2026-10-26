@@ -43,6 +43,14 @@ class Prices:
         return (fresh * self.input + u.cached_tokens * self.cached_input + u.output_tokens * self.output) / 1e6
 
 
+class BilledError(RuntimeError):
+    """Ошибка в оплаченном ответе (HTTP 200: отказ, пустой ответ): расход известен."""
+
+    def __init__(self, message: str, usage: Usage):
+        super().__init__(message)
+        self.usage = usage
+
+
 @dataclass
 class BrainResult:
     actions: list[dict[str, Any]]
@@ -101,10 +109,19 @@ class Brain(ABC):
         t0 = time.monotonic()
         try:
             text, usage = await self._call(context, image)
-            actions = parse_actions(text)
-            return BrainResult(actions, usage, time.monotonic() - t0, self.prices.cost(usage), raw=text[:2000])
-        except Exception as e:  # noqa: BLE001 — сеть/формат: решение пропускается, шоу продолжается
+        except BilledError as e:
+            return BrainResult([], e.usage, time.monotonic() - t0, self.prices.cost(e.usage),
+                               error=f"{type(e).__name__}: {e}"[:500])
+        except Exception as e:  # noqa: BLE001 — сеть: решение пропускается, шоу продолжается
             return BrainResult([], Usage(), time.monotonic() - t0, 0.0, error=f"{type(e).__name__}: {e}"[:500])
+        # Ответ уже оплачен: при ошибке формата расход всё равно учитывается (бюджет, отчёт).
+        cost = self.prices.cost(usage)
+        try:
+            actions = parse_actions(text)
+        except Exception as e:  # noqa: BLE001 — неверный JSON: решение пропускается
+            return BrainResult([], usage, time.monotonic() - t0, cost, error=f"{type(e).__name__}: {e}"[:500],
+                               raw=str(text)[:2000])
+        return BrainResult(actions, usage, time.monotonic() - t0, cost, raw=text[:2000])
 
     @abstractmethod
     async def _call(self, context: str, image: bytes | None) -> tuple[str, Usage]: ...
@@ -134,16 +151,20 @@ class OpenAIBrain(Brain):
             data = await r.json(content_type=None)
             if r.status != 200:
                 raise RuntimeError(f"HTTP {r.status}: {json.dumps(data, ensure_ascii=False)[:300]}")
-        msg = data["choices"][0]["message"]
-        if msg.get("refusal"):
-            raise RuntimeError(f"отказ модели: {msg['refusal'][:200]}")
-        u = data.get("usage", {})
+        # Расход — до разбора ответа: запрос уже оплачен, даже если ответ негодный.
+        u = data.get("usage") or {}
         usage = Usage(
             input_tokens=int(u.get("prompt_tokens", 0)),
             cached_tokens=int((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)),
             output_tokens=int(u.get("completion_tokens", 0)),
             reasoning_tokens=int((u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)),
         )
+        try:
+            msg = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError):
+            raise BilledError(f"нет ответа: {json.dumps(data, ensure_ascii=False)[:300]}", usage) from None
+        if msg.get("refusal"):
+            raise BilledError(f"отказ модели: {msg['refusal'][:200]}", usage)
         return msg.get("content") or "{}", usage
 
 
@@ -172,18 +193,18 @@ class GeminiBrain(Brain):
             data = await r.json(content_type=None)
             if r.status != 200:
                 raise RuntimeError(f"HTTP {r.status}: {json.dumps(data, ensure_ascii=False)[:300]}")
-        cands = data.get("candidates") or []
-        if not cands:
-            raise RuntimeError(f"пустой ответ: {json.dumps(data, ensure_ascii=False)[:300]}")
-        text = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", [])
-                       if not p.get("thought"))
-        m = data.get("usageMetadata", {})
+        m = data.get("usageMetadata") or {}
         usage = Usage(
             input_tokens=int(m.get("promptTokenCount", 0)),
             cached_tokens=int(m.get("cachedContentTokenCount", 0)),
             output_tokens=int(m.get("candidatesTokenCount", 0)) + int(m.get("thoughtsTokenCount", 0)),
             reasoning_tokens=int(m.get("thoughtsTokenCount", 0)),
         )
+        cands = data.get("candidates") or []
+        if not cands:
+            raise BilledError(f"пустой ответ: {json.dumps(data, ensure_ascii=False)[:300]}", usage)
+        text = "".join(p.get("text", "") for p in (cands[0].get("content") or {}).get("parts", [])
+                       if not p.get("thought"))
         return text or "{}", usage
 
 

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -49,13 +50,32 @@ def probe(path: str | Path) -> MediaInfo:
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"
                   and s.get("disposition", {}).get("attached_pic", 0) == 0), None)
+    width = int(video.get("width", 0)) if video else 0
+    height = int(video.get("height", 0)) if video else 0
+    if video and abs(video_rotation(video)) % 180 == 90:
+        # Телефон снимал вертикально: ffmpeg поворачивает кадры сам, размер — после поворота.
+        width, height = height, width
     return MediaInfo(
         duration=float(data.get("format", {}).get("duration") or 0.0),
         has_audio=any(s.get("codec_type") == "audio" for s in streams),
         has_video=video is not None,
-        width=int(video.get("width", 0)) if video else 0,
-        height=int(video.get("height", 0)) if video else 0,
+        width=width,
+        height=height,
     )
+
+
+def video_rotation(stream: dict) -> int:
+    """Поворот видеопотока в градусах: side_data «Display Matrix» (новые ffprobe) или тег rotate."""
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            try:
+                return int(round(float(sd["rotation"])))
+            except (TypeError, ValueError):
+                pass
+    try:
+        return int(round(float((stream.get("tags") or {}).get("rotate", 0))))
+    except (TypeError, ValueError):
+        return 0
 
 
 def scaled_size(width: int, height: int, target_width: int) -> tuple[int, int]:
@@ -153,15 +173,27 @@ class CameraReader:
         self.capture_size = capture_size
         self.capture_fps = capture_fps
         self.error: str | None = None
+        self.frame_errors = 0
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
+        self._err_thread: threading.Thread | None = None
+        # Последние строки stderr: читаются постоянно, иначе труба переполняется (DirectShow
+        # пишет о пропущенных кадрах) и ffmpeg встаёт.
+        self._stderr_tail: deque[str] = deque(maxlen=50)
 
     def start(self) -> None:
         cmd = [ffmpeg_bin(), "-v", "error", *camera_input_args(self.camera, self.capture_size, self.capture_fps),
                *_frame_args(self.fps, self.width, self.height)]
         self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self._err_thread = threading.Thread(target=self._drain_stderr, name="camera-stderr", daemon=True)
+        self._err_thread.start()
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._thread.start()
+
+    def _drain_stderr(self) -> None:
+        assert self._proc and self._proc.stderr
+        for line in self._proc.stderr:
+            self._stderr_tail.append(line.decode(errors="replace").rstrip())
 
     def _run(self) -> None:
         assert self._proc and self._proc.stdout
@@ -169,10 +201,16 @@ class CameraReader:
         while True:
             raw = self._proc.stdout.read(size)
             if len(raw) < size:
-                err = self._proc.stderr.read().decode(errors="replace") if self._proc.stderr else ""
+                if self._err_thread:
+                    self._err_thread.join(timeout=1.0)  # дочитать последние строки ffmpeg
+                err = " | ".join(list(self._stderr_tail)[-5:])
                 self.error = f"камера остановилась: {err.strip()[:300]}"
                 return
-            self.on_frame(self.clock.now(), np.frombuffer(raw, np.uint8).reshape(self.height, self.width, 3))
+            try:
+                self.on_frame(self.clock.now(), np.frombuffer(raw, np.uint8).reshape(self.height, self.width, 3))
+            except Exception as e:  # noqa: BLE001 — сбой обработки кадра не должен останавливать камеру
+                self.frame_errors += 1
+                self.error = f"обработка кадра: {type(e).__name__}: {e}"[:300]
 
     def stop(self) -> None:
         if self._proc:

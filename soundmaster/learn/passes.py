@@ -185,11 +185,12 @@ def is_scenecut_candidate(f: dict[str, float], cfg: PassConfig | None = None) ->
             and (f["moved"] > 0 or f["pixel"] > 0))
 
 
-def merge(cands: list[PassCandidate], gap: float = 3.0) -> list[PassCandidate]:
-    """Кандидаты, которые пересекаются или ближе gap секунд, — один момент (источники объединяются)."""
+def merge(cands: list[PassCandidate], gap: float = 3.0, max_span: float = 1e9) -> list[PassCandidate]:
+    """Кандидаты, которые пересекаются или ближе gap секунд, — один момент (источники объединяются).
+    Дольше max_span секунд момент не растёт (кто-то ходит по сцене — цепочка не склеивается в минуту)."""
     out: list[PassCandidate] = []
     for c in sorted(cands, key=lambda c: c.t_start):
-        if out and c.t_start <= out[-1].t_end + gap:
+        if out and c.t_start <= out[-1].t_end + gap and max(out[-1].t_end, c.t_end) - out[-1].t_start <= max_span:
             m = out[-1]
             # рамку человека предпочитаем детектору по пикселям; из двух людей — того, кто прошёл дальше
             if c.track >= 0 and (m.track < 0 or c.travel > m.travel):

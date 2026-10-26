@@ -25,6 +25,7 @@ class Track:
         self.journal = journal
         self.q: "queue.Queue[tuple[np.ndarray, float] | None]" = queue.Queue(maxsize=4000)
         self.dropped = 0
+        self.error: str | None = None  # ошибка записи (поток жив и разбирает очередь)
         self._writer: WavStreamWriter | None = None
         self._thread = threading.Thread(target=self._run, name=f"rec-{name}", daemon=True)
         self._thread.start()
@@ -40,19 +41,43 @@ class Track:
             item = self.q.get()
             if item is None:
                 break
+            if self.error is not None:
+                continue  # запись уже сломалась: очередь разбираем, чтобы push и close не вставали
             block, t = item
-            if self._writer is None:
-                self._writer = WavStreamWriter(self.path, self.channels, self.sample_rate)
-                self.journal.write("track_start", track=self.name, file=self.path.name, t_first_sample=round(t, 4),
-                                   channels=self.channels, sample_rate=self.sample_rate)
-            self._writer.write(block)
+            try:
+                if self._writer is None:
+                    self._writer = WavStreamWriter(self.path, self.channels, self.sample_rate)
+                    self.journal.write("track_start", track=self.name, file=self.path.name,
+                                       t_first_sample=round(t, 4), channels=self.channels,
+                                       sample_rate=self.sample_rate)
+                self._writer.write(block)
+            except Exception as e:  # noqa: BLE001 — например, кончился диск: шоу идёт дальше без записи
+                self.error = f"{type(e).__name__}: {e}"
+                self.journal.write("track_error", track=self.name, error=self.error)
         if self._writer:
-            self._writer.close()
-            self.journal.write("track_end", track=self.name, frames=self._writer.frames, dropped=self.dropped)
+            try:
+                self._writer.close()
+            except Exception as e:  # noqa: BLE001
+                self.error = self.error or f"{type(e).__name__}: {e}"
+            self.journal.write("track_end", track=self.name, frames=self._writer.frames, dropped=self.dropped,
+                               error=self.error)
 
-    def close(self) -> None:
-        self.q.put(None)
-        self._thread.join(timeout=5)
+    def close(self, timeout: float = 5.0) -> None:
+        """Не блокируется навсегда: если поток записи завис, очередь освобождается от блоков."""
+        try:
+            self.q.put(None, timeout=timeout)
+        except queue.Full:
+            while True:  # поток не разбирает очередь — выбрасываем блоки, чтобы поместился сигнал конца
+                try:
+                    self.q.get_nowait()
+                    self.dropped += 1
+                except queue.Empty:
+                    break
+            try:
+                self.q.put_nowait(None)
+            except queue.Full:
+                pass
+        self._thread.join(timeout=timeout)
 
 
 class Recorder:

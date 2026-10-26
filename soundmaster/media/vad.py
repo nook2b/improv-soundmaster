@@ -32,6 +32,8 @@ class EnergyVAD:
         max_utterance_s: float = 6.0,
         min_utterance_s: float = 0.25,
         floor_db: float = -60.0,
+        noise_window_s: float = 8.0,  # окно для уровня шума во время речи
+        noise_percentile: float = 10.0,
     ):
         self.sr = sample_rate
         self.frame = int(sample_rate * frame_ms / 1000)
@@ -43,6 +45,10 @@ class EnergyVAD:
         self.min_frames = int(min_utterance_s * 1000 / frame_ms)
         self.noise_db = floor_db + 20.0
         self.floor_db = floor_db
+        # Уровни кадров за последние секунды: нижний процентиль — «подложка» (музыка, колонки),
+        # по нему уровень шума подстраивается и во время речи, иначе он замерзает на старте.
+        self._recent_db: deque[float] = deque(maxlen=max(10, int(noise_window_s * 1000 / frame_ms)))
+        self.noise_percentile = noise_percentile
         self._buf = np.zeros(0, np.float32)
         self._t_buf = 0.0  # время первого отсчёта в _buf
         self._speech: list[np.ndarray] = []
@@ -76,6 +82,13 @@ class EnergyVAD:
             db = 20 * np.log10(float(np.sqrt(np.mean(fr * fr))) + 1e-9)
             self.level_db = db
             voiced = db > max(self.noise_db + self.threshold_db, self.floor_db)
+            self._recent_db.append(db)
+            if self.in_speech and len(self._recent_db) >= self._recent_db.maxlen // 4:
+                # Во время речи — медленно к нижнему процентилю окна: паузы над ровной подложкой
+                # (музыка, колонки в рекордере) остаются паузами.
+                low = float(np.percentile(self._recent_db, self.noise_percentile))
+                rate = 0.2 if low < self.noise_db else 0.02
+                self.noise_db += (low - self.noise_db) * rate
             if not self.in_speech:
                 # Уровень шума следит за тишиной: быстро вниз, медленно вверх.
                 rate = 0.2 if db < self.noise_db else 0.01

@@ -30,7 +30,7 @@ from .generators import MusicGenerator
 @dataclass
 class ActiveMusic:
     state: MusicState
-    source: str  # "generator" | "file" | "none"
+    source: str  # "generator" | "file" | "none" (в том числе генератор упал, ждём резерв)
     voice_id: int | None
     owner: str
     buffer: StreamBuffer | None = None
@@ -143,6 +143,14 @@ class MusicDirector:
         return self._fallback(state, owner)
 
     def _start_file(self, state: MusicState, owner: str) -> str:
+        # Выбор файла отменяет всё, что ещё ждёт на канале: иначе генератор, набравший буфер,
+        # или догрузившаяся запись пула позже заменили бы этот выбор.
+        pending = self._pending.pop(state.channel, None)
+        cur = self.active.get(state.channel)
+        if pending or (cur and cur.source == "generator"):
+            self._stop_generator()
+        if self._pool_pending and self._pool_pending[0].channel == state.channel:
+            self._pool_pending = None
         if not state.file or state.file not in self.engine.sounds:
             self.stop(state.channel)
             self.active[state.channel] = ActiveMusic(state, "none", None, owner)
@@ -217,11 +225,8 @@ class MusicDirector:
         self._pool_pending = None
         self._pool_cache.move_to_end(state.file or "")
         self.engine.sounds[state.file or ""] = data
-        if self.generator and (self.channel_source("music") == "generator" or "music" in self._pending):
-            self._pending.pop("music", None)
-            self._stop_generator()
         self._dip_until = None
-        self._start_file(state, owner)
+        self._start_file(state, owner)  # генератор (играющий или ждущий буфера) остановит сам
         return "pool"
 
     def channel_source(self, channel: str) -> str | None:
@@ -346,6 +351,9 @@ class MusicDirector:
                 self.journal.write("music", action="fallback", state=cur.state.id, reason=reason)
                 self._stop_generator()
                 self._dip_until = None
+                # Генератор больше не источник: резерв запускается один раз, а не на каждом тике,
+                # пока грузится запись пула. Голос остаётся до плавной смены на файл.
+                cur.source, cur.buffer = "none", None
                 if failed:
                     self._maybe_retry_generator()
                 self._fallback(cur.state, cur.owner)

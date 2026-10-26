@@ -185,19 +185,41 @@ class ASRWorker:
         self.errors = 0
         self.last_error: str | None = None
         self.state = "idle"  # idle | loading | ready | error
+        self._unfinished = 0  # фраз в очереди и в распознавании
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="asr", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
     def submit(self, u: Utterance) -> None:
-        while self.q.qsize() >= self.max_queue:
-            try:
-                self.q.get_nowait()
-                self.dropped += 1
-            except queue.Empty:
+        with self._lock:
+            while self.q.qsize() >= self.max_queue:
+                try:
+                    if self.q.get_nowait() is not None:
+                        self.dropped += 1
+                        self._unfinished -= 1
+                except queue.Empty:
+                    break
+            self._unfinished += 1
+            self.q.put(u)
+
+    @property
+    def busy(self) -> bool:
+        """Есть фразы в очереди или в распознавании (после ошибки загрузки — нет: их никто не возьмёт)."""
+        if self.state == "error":
+            return False
+        with self._lock:
+            return self._unfinished > 0
+
+    def wait_ready(self, timeout: float) -> bool:
+        """Ждать конца загрузки модели (ready или error); False — не дождались."""
+        deadline = time.monotonic() + timeout
+        while self.state not in ("ready", "error"):
+            if time.monotonic() >= deadline or not self._thread.is_alive():
                 break
-        self.q.put(u)
+            time.sleep(0.05)
+        return self.state in ("ready", "error")
 
     def process(self, u: Utterance) -> Transcript | None:
         t0 = time.monotonic()
@@ -226,9 +248,13 @@ class ASRWorker:
             u = self.q.get()
             if u is None:
                 return
-            tr = self.process(u)
-            if tr:
-                self.on_transcript(tr)
+            try:
+                tr = self.process(u)
+                if tr:
+                    self.on_transcript(tr)
+            finally:
+                with self._lock:
+                    self._unfinished -= 1
 
     def stop(self) -> None:
         self.q.put(None)

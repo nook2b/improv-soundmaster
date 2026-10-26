@@ -61,16 +61,35 @@ class SoundDeviceOutput:
         self.on_block = on_block
         self.output_latency = 0.0
         self.xruns = 0
+        # Ошибки в callback: исключение остановило бы поток PortAudio до конца шоу. В callback
+        # их только считаем и запоминаем (без журнала), сообщает о них основной цикл.
+        self.render_errors = 0
+        self.last_error: BaseException | None = None
         self._stream = None
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         if status:
             self.xruns += 1
-        block = self.mixer.render(frames)
-        outdata[:] = block
+        try:
+            block = self.mixer.render(frames)
+            outdata[:] = block
+        except Exception as e:  # noqa: BLE001 — блок тишины вместо обрыва вывода
+            self.render_errors += 1
+            self.last_error = e
+            outdata.fill(0)
+            return
         if self.on_block:
-            dac_delay = max(0.0, time_info.outputBufferDacTime - time_info.currentTime)
-            self.on_block(block, self.clock.now() + dac_delay)
+            try:
+                dac_delay = max(0.0, time_info.outputBufferDacTime - time_info.currentTime)
+                self.on_block(block, self.clock.now() + dac_delay)
+            except Exception as e:  # noqa: BLE001 — сбой записи не должен глушить звук
+                self.render_errors += 1
+                self.last_error = e
+
+    def take_error(self) -> tuple[int, str | None]:
+        """Для журнала из основного цикла: (сколько ошибок всего, текст последней) и сброс последней."""
+        e, self.last_error = self.last_error, None
+        return self.render_errors, (f"{type(e).__name__}: {e}" if e else None)
 
     def start(self) -> None:
         sd = _sd()

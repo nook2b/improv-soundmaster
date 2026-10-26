@@ -206,8 +206,9 @@ class App:
         if brain:
             self.scheduler = BrainScheduler(brain, self.controller, self.journal, self.clock,
                                             SchedulerConfig.from_dict(bcfg))
-        scenecut = (SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector")))
-                    if video_on and str(sc.get("mode", "SUGGEST")).upper() != "OFF" else None)
+        # Детектор строится при любой камере: режим OFF/SUGGEST/AUTO проверяет контроллер,
+        # и включённый с пульта «монтаж» начинает работать сразу.
+        scenecut = SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector"))) if video_on else None
         self.listener = Listener(
             self.controller, self.journal, self.clock, None,
             vad=EnergyVAD(ASR_RATE, **(listen.get("vad") or {})),
@@ -293,8 +294,13 @@ class App:
             "overflows": self.capture.overflows if self.capture else 0,
             "error": self.input_error,
         }
+        # ошибки внутри аудио-callback копятся там без журнала (callback не должен блокироваться) — пишем отсюда
+        errors, last = self.output.take_error() if hasattr(self.output, "take_error") else (0, None)
+        if last:
+            self.journal.write("output_error", count=errors, error=last)
         s["output"] = {"xruns": self.output.xruns, "limited_blocks": self.mixer.limited_blocks,
-                       "latency_ms": round(1000 * float(getattr(self.output, "output_latency", 0.0)), 1)}
+                       "latency_ms": round(1000 * float(getattr(self.output, "output_latency", 0.0)), 1),
+                       "render_errors": errors}
         s["recording"] = str(self.run_dir) if self.recorder else None
         s["listen"] = {
             "enabled": self.listener is not None,

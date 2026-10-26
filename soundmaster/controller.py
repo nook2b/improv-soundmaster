@@ -110,7 +110,7 @@ class Controller:
         self.dismissed: dict[str, float] = {}  # target → когда техник отклонил (в этой сцене)
         self.scene_end_count = 0
         self.scene_end_pause_until = 0.0
-        self.scene_cut_mode = scene_cut_mode.upper()  # OFF | SUGGEST | AUTO
+        self.scene_cut_mode = _scene_cut_mode(scene_cut_mode)  # OFF | SUGGEST | AUTO
         self.scene_cut_music = scene_cut_music  # stop | keep
         self.scene_cut_cooldown = scene_cut_cooldown
         # Музыка от AI: SUGGEST — подсказка человеку; AUTO — включается сама (решение команды:
@@ -137,6 +137,39 @@ class Controller:
         self.state.t_scene_start = clock.now()
 
     # ---- вспомогательное ---------------------------------------------------------------
+    def set_scene_cut_mode(self, mode: str) -> str:
+        """Режим «монтажа» с пульта. Неизвестный режим — ошибка, а не молчаливое «как SUGGEST»."""
+        self.scene_cut_mode = _scene_cut_mode(mode)
+        self.journal.write("operator", action="scene_cut_mode", mode=self.scene_cut_mode)
+        return self.scene_cut_mode
+
+    def _music_owners(self, channel: str) -> list[str]:
+        """Чьи выборы на канале: играющий, ждущий буфера генератора и ждущий загрузки записи.
+
+        Ручной выбор, который ещё грузится, — уже выбор человека: AI его не перебивает.
+        """
+        m = self.music
+        owners = []
+        pend = m._pending.get(channel)
+        if pend:
+            owners.append(pend[1])
+        if m._pool_pending and m._pool_pending[0].channel == channel:
+            owners.append(m._pool_pending[1])
+        a = m.active.get(channel)
+        if a:
+            owners.append(a.owner)
+        return owners
+
+    def _auto_fire_block(self, effect) -> str | None:
+        """Почему взведённое AI не может сыграть само прямо сейчас (None — может)."""
+        if effect.mode != "AUTO":
+            return "mode_suggest"
+        if not self.state.automation_enabled:
+            return "automation_off"
+        if not self.clean_actor_feed:
+            return "no_clean_actor_feed"
+        return None
+
     @property
     def limits(self):
         return self.registry.limits
@@ -347,7 +380,8 @@ class Controller:
         if a:
             self._disarm(f"replaced_by:{effect_id}")
         ttl = min(timeout or effect.max_arm_timeout, effect.max_arm_timeout)
-        shadow = source != "manual" and (effect.mode != "AUTO" or not self.state.automation_enabled)
+        # Без чистого звука актёров (только рекордер) автозапуск эффектов закрыт — как в ai_effect.
+        shadow = source != "manual" and self._auto_fire_block(effect) is not None
         self.state.armed = Armed(effect_id, source, effect.arm_triggers, self.state.scene_id, now, now + ttl,
                                  shadow, reason, request_id)
         return log(Decision("armed", effect_id, "shadow" if shadow else None))
@@ -378,7 +412,16 @@ class Controller:
         if trigger == "operator":
             vid = self._play(a.effect, "manual", "manual", {"request_id": a.request_id})
             return log(Decision("played", a.effect, voice_id=vid))
-        if a.shadow:
+        if a.source != "manual":
+            # Режим, автоматика и вход могли измениться после взведения: проверяем ещё раз.
+            if effect.mode == "OFF":
+                return log(Decision("blocked", a.effect, "mode_off"))
+            why = self._auto_fire_block(effect)
+            if why:
+                extra["why"] = why
+        else:
+            why = None
+        if a.shadow or why:
             # Теневой режим: что сыграло бы — в журнал; технику — короткая подсказка.
             s = self._suggest("effect", a.effect, f"сработало бы: {word or trigger}", None, a.request_id, ttl=2.0)
             return log(Decision("suggested", a.effect, "shadow", s.id))
@@ -396,20 +439,62 @@ class Controller:
         if self.state.armed:
             self._disarm("stop_ai")
         self.engine.mixer.stop(owner="ai", fade=0.3)
-        for ch, a in list(self.music.active.items()):
-            if a.owner in ("ai", "system"):
-                self.music.stop(ch)
+        m = self.music
+        channels = set(m.active) | set(m._pending)
+        if m._pool_pending:
+            channels.add(m._pool_pending[0].channel)
+        for ch in channels:
+            self._cancel_ai_music(ch)
         self.journal.write("operator", action="stop_ai_sound")
+
+    def _cancel_ai_music(self, ch: str) -> None:
+        """Остановить на канале всё от AI/системы — и играющее, и ждущее буфера или загрузки записи.
+
+        Ручной выбор человека (играющий или ещё грузящийся) остаётся.
+        """
+        m = self.music
+        auto = ("ai", "system")
+        pend = m._pending.get(ch)
+        pool = m._pool_pending if m._pool_pending and m._pool_pending[0].channel == ch else None
+        act = m.active.get(ch)
+        owners = self._music_owners(ch)
+        if not any(o in auto for o in owners):
+            return
+        if "manual" not in owners:
+            m.stop(ch)
+            return
+        # На канале есть и ручное, и автоматическое: снимаем только автоматическое.
+        if pend and pend[1] in auto:
+            del m._pending[ch]
+            m._stop_generator()
+        if pool and pool[1] in auto:
+            m._pool_pending = None
+        if act and act.owner in auto:
+            if act.source == "generator" and ch not in m._pending:
+                m._stop_generator()
+            m._fade_out_current(ch)
 
     def release_music(self) -> bool:
         """Вернуть музыку автоматике: модель заменит её, как только поймёт сцену (сразу, без ожидания)."""
-        a = self.music.active.get("music")
-        if not (a and a.owner == "manual"):
+        m = self.music
+        released = False
+        pend = m._pending.get("music")
+        if pend and pend[1] == "manual":
+            m._pending["music"] = (pend[0], "system", pend[2])
+            released = True
+        if m._pool_pending and m._pool_pending[0].channel == "music" and m._pool_pending[1] == "manual":
+            m._pool_pending = (m._pool_pending[0], "system")
+            released = True
+        a = m.active.get("music")
+        if a and a.owner == "manual":
+            a.owner = "system"
+            released = True
+        if not released:
             return False
-        a.owner = "system"
         self.music_t_set = None
         self.music_picks = 0
-        self.journal.write("operator", action="release_music", state=a.state.id)
+        cur = m.current("music")
+        self.journal.write("operator", action="release_music", state=cur.id if cur else None)
         return True
 
     def manual_stop_channel(self, channel: str) -> None:
@@ -540,8 +625,7 @@ class Controller:
             return "already_playing"
         if any(s.target == target for s in self.state.suggestions.values()):
             return "already_suggested"
-        active = self.music.active.get(channel)
-        if active and active.owner == "manual":
+        if "manual" in self._music_owners(channel):
             return "manual_music"  # человек выбрал сам — AI не перебивает до новой сцены
         hold = self.music_first_hold if self.music_picks <= 1 else self.music_min_hold
         if (channel == "music" and chosen and self.music_t_set is not None
@@ -693,3 +777,10 @@ class Controller:
             "music": self.music.status(),
             "modes": {e.id: e.mode for e in self.registry.effects.values()},
         }
+
+
+def _scene_cut_mode(mode: str) -> str:
+    m = str(mode).upper()
+    if m not in ("OFF", "SUGGEST", "AUTO"):
+        raise ValueError(f"scene_cut mode: {mode} (OFF | SUGGEST | AUTO)")
+    return m
