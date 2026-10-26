@@ -124,8 +124,47 @@ def boxes(data_dir: Path, video: str) -> list[dict]:
              "frames": c.get("frames", [])} for c in d.get("candidates", [])]
 
 
-def make_app(data_dir: Path, clip_dir: Path):
+def make_app(data_dir: Path, clip_dir: Path, sync=None, idle: float = 60.0):
+    """sync — GitSync: отметки уходят на GitHub сами, через idle секунд после последней и при выходе."""
+    import asyncio
+    import time
+
     from aiohttp import web
+
+    state = {"changed_at": 0.0}
+
+    def touched() -> None:
+        state["changed_at"] = time.time()
+
+    async def push_now() -> dict:
+        if sync is None:
+            return {"ok": False, "message": "автоотправка выключена (--no-push)", "at": 0}
+        r = await asyncio.to_thread(sync.push)
+        return {"ok": r.ok, "message": r.message, "at": r.at}
+
+    async def autosync(_app):
+        async def loop():
+            while True:
+                await asyncio.sleep(15)
+                if state["changed_at"] and time.time() - state["changed_at"] >= idle:
+                    state["changed_at"] = 0.0
+                    await push_now()
+        task = asyncio.create_task(loop())
+        yield
+        task.cancel()
+        if sync is not None and sync.changed():
+            print("Отправляю разметку на GitHub…")
+            r = await asyncio.to_thread(sync.push)
+            print(("Отправлено." if r.ok else "Не отправилось: " + r.message +
+                   " — отметки сохранены и уйдут при следующем запуске."))
+
+    async def sync_api(req):
+        if req.method == "POST":
+            return web.json_response(await push_now())
+        last = sync.last if sync else None
+        return web.json_response({"enabled": bool(sync and sync.enabled), "pending": bool(state["changed_at"]),
+                                  "ok": last.ok if last else None, "message": last.message if last else "",
+                                  "at": last.at if last else 0})
 
     async def index(_req):
         return web.Response(text=PAGE, content_type="text/html")
@@ -142,6 +181,7 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.json_response({"boxes": boxes(data_dir, req.query.get("video", ""))})
 
     async def track(req):
+        touched()
         body = await req.json()
         try:
             cid = str(body["id"])
@@ -153,6 +193,7 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.json_response({"ok": True})
 
     async def manual(req):
+        touched()
         body = await req.json()
         try:
             m = save_manual(data_dir, str(body["video"]), float(body["t"]), bool(body.get("remove")))
@@ -161,6 +202,7 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.json_response({"ok": True, "manual": m})
 
     async def label(req):
+        touched()
         body = await req.json()
         try:
             labels = save_label(data_dir, str(body["id"]), body.get("label"))
@@ -176,19 +218,25 @@ def make_app(data_dir: Path, clip_dir: Path):
         return web.FileResponse(path)
 
     app = web.Application()
-    app.add_routes([web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual), web.get("/api/boxes", boxes_api), web.post("/api/track", track),
+    app.cleanup_ctx.append(autosync)
+    app.add_routes([web.get("/api/sync", sync_api), web.post("/api/sync", sync_api), web.get("/", index), web.get("/watch", watch), web.get("/api/items", items), web.post("/api/label", label), web.post("/api/manual", manual), web.get("/api/boxes", boxes_api), web.post("/api/track", track),
                     web.get("/clips/{name}", clip)])
     return app
 
 
-def serve(data_dir: Path, clip_dir: Path, port: int = 8766, open_browser: bool = True) -> None:
+def serve(data_dir: Path, clip_dir: Path, port: int = 8766, open_browser: bool = True, push: bool = True) -> None:
     from aiohttp import web
 
+    from .sync import GitSync
+
+    sync = GitSync(data_dir) if push else None
     url = f"http://127.0.0.1:{port}"
     print(f"Разметка: {url}  (остановить — Ctrl+C)")
+    if sync and sync.enabled:
+        print("Отметки уходят на GitHub сами (через минуту после последней и при выходе).")
     if open_browser:
         webbrowser.open(url)
-    web.run_app(make_app(data_dir, clip_dir), host="127.0.0.1", port=port, print=None)
+    web.run_app(make_app(data_dir, clip_dir, sync), host="127.0.0.1", port=port, print=None)
 
 
 PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
@@ -266,7 +314,8 @@ canvas.tl{width:100%;display:block;border-radius:6px;cursor:pointer;background:v
  <span class="muted">Смотрите шоу (можно на ×1.5–2); увидели монтаж без полоски на таймлайне — пауза и M. Убрать отметку — клик по синему флажку на нижнем таймлайне с Alt.</span></div>
 </div>
 <p class="muted" id="msg"></p>
-<p class="muted">Пробел — пауза, <kbd>←</kbd><kbd>→</kbd> — 5 с (с Shift — 1 с), клик по таймлайну — перемотка. Отметки сохраняются сразу; закончили — <code>git add data/scenecut</code>, <code>git commit</code>, <code>git push</code>.</p>
+<div class="row muted"><span id="sync">Отправка на GitHub: …</span><button id="bSync">Отправить сейчас</button></div>
+<p class="muted">Пробел — пауза, <kbd>←</kbd><kbd>→</kbd> — 5 с (с Shift — 1 с), клик по таймлайну — перемотка. Отметки сохраняются сразу и сами уходят на GitHub через минуту после последней.</p>
 </div>
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
@@ -380,5 +429,11 @@ let lastDraw=0;
 (function tick(now){if(player&&ready&&player.getCurrentTime){const nt=player.getCurrentTime();
   const c=curC();if(loop&&c&&nt>c.t_end+1.5&&nt<c.t_end+4){player.seekTo(c.t,true)}
   if(Math.abs(nt-t)>0.02){t=nt;if(now-lastDraw>250){lastDraw=now;draw()}}}overlay();requestAnimationFrame(tick)})(0);
-addEventListener("resize",draw);setInterval(load,30000);load();
+async function syncStatus(post){try{const r=await fetch("/api/sync",{method:post?"POST":"GET"});const d=await r.json();
+ const at=d.at?new Date(d.at*1000).toLocaleTimeString("ru",{hour:"2-digit",minute:"2-digit"}):"";
+ $("sync").textContent=d.enabled===false?"Автоотправка выключена — отправляйте через git":
+  d.pending?"Отправка на GitHub: новые отметки уйдут через минуту":d.ok===false?`Не отправилось (${at}): ${d.message}. Отметки сохранены, будет ещё попытка.`:
+  d.ok?`Отправлено на GitHub в ${at}`:"Отправка на GitHub: новых отметок нет"}catch(e){}}
+$("bSync").onclick=async()=>{$("sync").textContent="Отправляю…";await syncStatus(true)};
+addEventListener("resize",draw);setInterval(load,30000);setInterval(()=>syncStatus(false),10000);load();syncStatus(false);
 </script></body></html>"""

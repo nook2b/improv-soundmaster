@@ -71,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--only-shows", action="store_true", help="только шоу (в названии «Компот» или «шоу»)")
     cs.add_argument("--out", default="data/scenecut", help="куда писать рамки людей (в git)")
     cs.add_argument("--clips", default="recordings/scenecut_clips", help="куда писать ролики (не в git)")
+    cs.add_argument("--no-push", action="store_true", help="не отправлять собранное на GitHub самому")
     cs.add_argument("--save-clips", action="store_true",
                     help="нарезать ролики mp4 (не нужно для YouTube: разметка смотрит видео во встроенном плеере)")
     cs.add_argument("--model", default="yolo11s.pt", help="нейросеть для людей (yolo11n.pt — быстрее, yolo11m.pt — точнее)")
@@ -78,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     ls_.add_argument("--out", default="data/scenecut")
     ls_.add_argument("--clips", default="recordings/scenecut_clips")
     ls_.add_argument("--port", type=int, default=8766)
+    ls_.add_argument("--no-push", action="store_true", help="не отправлять отметки на GitHub самому")
     args = p.parse_args(argv)
 
     if args.cmd == "collect-scenecuts":
@@ -85,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             res = collect(args.sources, Path(args.out), Path(args.clips), limit=args.limit,
-                          only_shows=args.only_shows, model=args.model, save_clips=args.save_clips)
+                          only_shows=args.only_shows, model=args.model, save_clips=args.save_clips,
+                          push=not args.no_push)
         except (RuntimeError, ImportError) as e:
             print(f"Ошибка: {e}")
             return 1
@@ -96,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "label-scenecuts":
         from .learn.label import serve
 
-        serve(Path(args.out), Path(args.clips), port=args.port)
+        serve(Path(args.out), Path(args.clips), port=args.port, push=not args.no_push)
         return 0
 
     if args.cmd == "devices":

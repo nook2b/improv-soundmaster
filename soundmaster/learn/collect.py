@@ -386,7 +386,7 @@ def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[s
 def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None = None, only_shows: bool = False,
             fps: float = 10.0, progress: Callable[[str], None] = print,
             detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s.pt",
-            save_clips: bool = False) -> list[dict]:
+            save_clips: bool = False, push: bool = False) -> list[dict]:
     """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются."""
     ffmpeg_bin()
     make = detector_factory or (lambda: YoloPeople(model))
@@ -434,4 +434,9 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
             continue
         progress(f"  готово: кандидатов {len(r['candidates'])}")
         results.append(r)
+        if push:  # отправить на GitHub сразу, не дожидаясь конца всего плейлиста
+            from .sync import GitSync
+
+            res = GitSync(out_dir).push(f"Сбор монтажей: {e['title']}")
+            progress(f"  GitHub: {res.message}")
     return results
