@@ -317,3 +317,14 @@ def test_git_sync_commits_pulls_and_pushes(tmp_path):
     assert not (claude / "notes.txt").exists()
     assert (ivan / "code.py").read_text(encoding="utf-8") == "x = 2\n"  # забрал и правки Claude
     assert sync.push().message == "всё отправлено"
+
+
+def test_ignored_ranges_hidden_from_labeling(tmp_path):
+    """Разминка на занятии (Иван: до 42 мин не учитывать) — кандидаты не показываются и не идут в обучение."""
+    from soundmaster.learn.label import load_items, videos
+
+    (tmp_path / "v.json").write_text(json.dumps({"video": "v", "title": "Занятие", "candidates": [
+        {"id": "v_000100", "t_start": 10.0}, {"id": "v_030000", "t_start": 3000.0}]}), encoding="utf-8")
+    (tmp_path / "ignore.json").write_text(json.dumps({"v": [[0, 2520]]}), encoding="utf-8")
+    assert [i["id"] for i in load_items(tmp_path)] == ["v_030000"]
+    assert [v["video"] for v in videos(tmp_path)] == ["v"]  # ignore.json — не видео
