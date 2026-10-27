@@ -139,7 +139,8 @@ def pass_features(track: int, sources: list[str], frames: Frames, t_start: float
     pix = 1.0 if "pixel" in sources else 0.0
     pts = [(t, b[track]) for t, b in frames if track in b]
     f = {"span": 0.0, "speed": 0.0, "height": 0.0, "top": 1.0, "bottom": 1.0, "pixel": pix, "occlusion": 0.0,
-         "people_before": 0.0, "people_after": 0.0, "moved": 0.0, "straight": 0.0}
+         "people_before": 0.0, "people_after": 0.0, "moved": 0.0, "straight": 0.0,
+         "edge_in": 0.5, "edge_out": 0.5, "dur": 0.0, "vis": 0.0, "net": 0.0}
     if len(pts) >= 3:
         ts = np.array([p[0] for p in pts])
         bx = np.array([p[1] for p in pts])
@@ -151,7 +152,12 @@ def pass_features(track: int, sources: list[str], frames: Frames, t_start: float
                 speed = max(speed, abs(cx[j] - cx[i]) / (ts[j] - ts[i]))
         f.update(span=float(cx.max() - cx.min()), speed=speed, height=float((bx[:, 3] - bx[:, 1]).mean()),
                  top=float(bx[:, 1].mean()), bottom=float(bx[:, 3].mean()),
-                 straight=float(abs(np.corrcoef(ts, cx)[0, 1])) if np.std(cx) > 0 else 0.0)
+                 straight=float(abs(np.corrcoef(ts, cx)[0, 1])) if np.std(cx) > 0 else 0.0,
+                 # вошёл и вышел у края кадра (монтажник появляется из-за кулис), сколько секунд виден,
+                 # насколько непрерывно (смазанный бегущий теряется реже, чем перекрытый актёрами)
+                 edge_in=float(min(bx[0, 0], 1 - bx[0, 2])), edge_out=float(min(bx[-1, 0], 1 - bx[-1, 2])),
+                 dur=float(ts[-1] - ts[0]), net=float(abs(cx[-1] - cx[0])),
+                 vis=len(pts) / max(1, sum(1 for t, _ in frames if ts[0] <= t <= ts[-1])))
 
         def overlap(a: Box, b: Box) -> float:
             return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) / max(1e-6, min(a[2] - a[0], b[2] - b[0]))
@@ -200,3 +206,62 @@ def merge(cands: list[PassCandidate], gap: float = 3.0, max_span: float = 1e9) -
         else:
             out.append(PassCandidate(c.t_start, c.t_end, c.track, c.travel, c.height, list(c.sources)))
     return out
+
+
+@dataclass
+class LivePass:
+    """Проход, о котором детектор на шоу ещё не решил окончательно."""
+
+    c: PassCandidate
+    fast_done: bool = False
+    state: dict = field(default_factory=dict)  # что решил детектор (вероятность, действие, «время сцены»)
+
+
+class LivePasses:
+    """Проходы так, как их видит детектор на шоу: без заглядывания вперёд.
+
+    Один и тот же код — и на шоу (`media/peoplecut.py`), и при обучении (`learn/model.py` прогоняет через него
+    сохранённые рамки): признаки модели считаются одинаково. Соседние проходы склеиваются, пока по
+    моменту не принято быстрое решение (через fast_after с после прохода); полное — через full_after с.
+    """
+
+    GAP = 3.0  # проходы ближе — один момент (как merge при сборе)
+    MAX_SPAN = 12.0
+
+    def __init__(self, fast_after: float, full_after: float, cfg: PassConfig | None = None):
+        self.fast_after, self.full_after = fast_after, full_after
+        self.finder = PassFinder(cfg)
+        self.pending: list[LivePass] = []
+
+    def boxes(self, t: float, boxes: dict[int, Box]) -> None:
+        for c in self.finder.push(t, boxes):
+            self.add(c)
+
+    def add(self, c: PassCandidate) -> None:
+        for p in self.pending:
+            m = p.c
+            if c.t_start > m.t_end + self.GAP:
+                continue
+            if not p.fast_done and max(m.t_end, c.t_end) - m.t_start <= self.MAX_SPAN:
+                if c.track >= 0 and (m.track < 0 or c.travel > m.travel):
+                    m.track, m.travel, m.height = c.track, c.travel, c.height
+                m.t_start, m.t_end = min(m.t_start, c.t_start), max(m.t_end, c.t_end)
+                m.sources = sorted(set(m.sources) | set(c.sources))
+                return
+            if p.fast_done:
+                # тот же момент ещё длится после быстрого решения: источник — в него, время — нет
+                m.sources = sorted(set(m.sources) | set(c.sources))
+                return
+        self.pending.append(LivePass(PassCandidate(c.t_start, c.t_end, c.track, c.travel, c.height, list(c.sources))))
+
+    def ready(self, t: float) -> list[tuple[str, LivePass]]:
+        """Моменты, по которым пора решать: ("fast", p) — один раз, затем ("full", p) — и он уходит."""
+        out = []
+        for p in list(self.pending):
+            if not p.fast_done and t >= p.c.t_end + self.fast_after:
+                p.fast_done = True
+                out.append(("fast", p))
+            elif p.fast_done and t >= p.c.t_end + self.full_after:
+                self.pending.remove(p)
+                out.append(("full", p))
+        return out

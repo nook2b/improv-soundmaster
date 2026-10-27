@@ -28,17 +28,17 @@ def quiet(sec):
 
 @pytest.fixture(scope="module")
 def scene_video(tmp_path_factory):
-    """12 с: реплики на 1–2.5 с («птичка»), 4–4.6 с («чик»), 6–7.5 с («звонит в дверь»);
-    на 9–10.5 с — проход крупной фигуры перед камерой."""
+    """14 с: реплики на 1–2.5 с («птичка»), 4–4.6 с («чик»), 6–7.5 с («звонит в дверь»);
+    на 10.5–12 с — проход крупной фигуры перед камерой (после 10 с защиты начала сцены)."""
     d = tmp_path_factory.mktemp("media")
-    audio = np.concatenate([quiet(1), tone(1.5), quiet(1.5), tone(0.6), quiet(1.4), tone(1.5), quiet(4.5)])
+    audio = np.concatenate([quiet(1), tone(1.5), quiet(1.5), tone(0.6), quiet(1.4), tone(1.5), quiet(6.5)])
     write_wav(d / "a.wav", audio, SR)
     frames = []
-    for i in range(12 * FPS):
+    for i in range(14 * FPS):
         f = np.full((H, W, 3), 40, np.uint8)
         t = i / FPS
-        if 9.0 <= t <= 10.5:
-            x = int((t - 9.0) / 1.5 * (W - 30))
+        if 10.5 <= t <= 12.0:
+            x = int((t - 10.5) / 1.5 * (W - 30))
             f[int(H * 0.1):, x:x + 30] = 220
         frames.append(f)
     raw = d / "v.rgb"
@@ -59,7 +59,8 @@ def run(scene_video, tmp_path, rules=None, **kw):
     brain = FakeBrain(registry, rules=rules or [("звонит в дверь", {"type": "effect", "id": "doorbell",
                                                                     "reason": "звонок в дверь", "confidence": "high"})])
     opts = ReplayOptions(media=scene_video, config=ROOT / "config" / "show.yaml", speed=0,
-                         transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path, **kw)
+                         transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path,
+                         **{"scene_cut_kind": "pixel", **kw})
     rp = Replay(opts, brain=brain)
     summary = rp.run()
     return summary, load_journal(rp.out_dir / "journal.jsonl"), rp
@@ -119,7 +120,8 @@ def test_replay_realtime_threads(scene_video, tmp_path):
     brain = FakeBrain(registry, latency=0.3, rules=[("звонит в дверь", {"type": "effect", "id": "doorbell",
                                                                         "reason": "звонок", "confidence": "high"})])
     opts = ReplayOptions(media=scene_video, config=ROOT / "config" / "show.yaml", speed=1,
-                         transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path, max_seconds=8.5)
+                         transcript=scene_video.with_suffix(".txt"), out_dir=tmp_path, max_seconds=8.5,
+                         scene_cut_kind="pixel")
     rp = Replay(opts, brain=brain)
     summary = rp.run()
     j = load_journal(rp.out_dir / "journal.jsonl")
@@ -142,6 +144,7 @@ def test_cli_replay_by_url(scene_video, tmp_path, monkeypatch):
     cfg["registry"] = str(ROOT / "config" / "registry.yaml")
     cfg["input_profile"] = str(ROOT / "config" / "inputs" / "recorder.yaml")
     cfg["recording"]["dir"] = str(tmp_path / "rec")
+    cfg["scene_cut"]["kind"] = "pixel"
     show = tmp_path / "show.yaml"
     show.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
 

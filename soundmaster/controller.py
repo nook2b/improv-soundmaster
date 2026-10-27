@@ -286,6 +286,8 @@ class Controller:
         self.dismissed.clear()
         self.scene_end_count = 0
         self.scene_end_pause_until = 0.0
+        if keep_music or not self.state.automation_enabled:
+            self.music.release_dip()
         if not keep_music:
             self.music_t_set = None
             self.music_picks = 0
@@ -341,6 +343,33 @@ class Controller:
         s = self._suggest("new_scene", "new_scene", f"{source}: проход перед сценой", None, None, ttl=6.0)
         why = "mode_suggest" if self.scene_cut_mode != "AUTO" else "automation_off"
         return log(Decision("suggested", "new_scene", why, s.id))
+
+    def scene_cut_dip(self, source: str, confidence: float = 0.0, t_signal: float | None = None) -> Decision:
+        """Первый шаг: похоже на «монтаж», но модель не уверена — музыка приглушается (обратимо),
+        решение — через несколько секунд (scene_cut или scene_cut_reject). В SUGGEST — сразу подсказка."""
+        now = self.clock.now()
+        extra = {"confidence": round(confidence, 2), "t_signal": None if t_signal is None else round(t_signal, 3),
+                 "mode": self.scene_cut_mode}
+
+        def log(d: Decision) -> Decision:
+            return self._log(d, source, "scene_cut_dip", **extra)
+
+        if self.scene_cut_mode == "OFF":
+            return log(Decision("blocked", "new_scene", "mode_off"))
+        if now - self.state.t_scene_start < self.scene_cut_cooldown:
+            return log(Decision("deduped", "new_scene", "scene_just_started"))
+        if self.scene_cut_mode == "AUTO" and self.state.automation_enabled:
+            if self.scene_cut_music == "keep" or not self.music.hold_dip():
+                return log(Decision("deduped", "new_scene", "no_music_to_dip"))
+            return log(Decision("dipped", "new_scene"))
+        return self.scene_cut(source, confidence, t_signal)
+
+    def scene_cut_reject(self, source: str, confidence: float = 0.0) -> Decision:
+        """Второй шаг: проверка не подтвердила «монтаж» — музыка возвращается."""
+        dipped = self.music.dipped
+        self.music.release_dip()
+        return self._log(Decision("rejected" if dipped else "deduped", "new_scene", None if dipped else "no_dip"),
+                         source, "scene_cut_reject", confidence=round(confidence, 2))
 
     # ---- взведение и срабатывание синхронных эффектов -----------------------------------
     def _disarm(self, why: str) -> None:
@@ -430,6 +459,8 @@ class Controller:
 
     def set_automation(self, enabled: bool) -> None:
         self.state.automation_enabled = enabled
+        if not enabled:
+            self.music.release_dip()  # музыку ведёт человек: приглушение «ждём проверки монтажа» снимается
         self.journal.write("operator", action="automation", enabled=enabled)
 
     def stop_ai_sound(self) -> None:

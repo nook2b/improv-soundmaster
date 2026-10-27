@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--transcript", help="готовая расшифровка вместо распознавания: строки «0:12-0:15 текст»")
     rp.add_argument("--fast", action="store_true", help="быстрее реального времени (только без облачной модели)")
     rp.add_argument("--scene-cut", choices=["OFF", "SUGGEST", "AUTO"], help="режим «монтажа» для прогона")
+    rp.add_argument("--scene-cut-detector", choices=["people", "pixel"],
+                    help="чем ловить «монтаж»: обученной моделью (people) или старым детектором по пикселям")
     rp.add_argument("--clean-feed", action="store_true", help="считать звук чистым (как с петличек)")
     rp.add_argument("--no-video", action="store_true", help="не анализировать картинку")
     rp.add_argument("--max-seconds", type=float, help="прогнать только начало записи")
@@ -80,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
     ls_.add_argument("--clips", default="recordings/scenecut_clips")
     ls_.add_argument("--port", type=int, default=8766)
     ls_.add_argument("--no-push", action="store_true", help="не отправлять отметки на GitHub самому")
+    ts = sub.add_parser("train-scenecut", help="обучить модель «монтажа» на разметке (нужен scikit-learn)")
+    ts.add_argument("--data", default="data/scenecut")
+    ts.add_argument("--out", default="config/scenecut_model.json")
+    ts.add_argument("--trees", type=int, default=200)
     args = p.parse_args(argv)
 
     if args.cmd == "collect-scenecuts":
@@ -100,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         from .learn.label import serve
 
         serve(Path(args.out), Path(args.clips), port=args.port, push=not args.no_push)
+        return 0
+
+    if args.cmd == "train-scenecut":
+        from .learn.model import train
+
+        train(Path(args.data), Path(args.out), trees=args.trees)
         return 0
 
     if args.cmd == "devices":
@@ -136,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             media=media, config=Path(args.config), speed=0 if args.fast else 1,
             asr=args.asr, asr_model=args.asr_model, brain=args.brain,
             transcript=Path(args.transcript).expanduser() if args.transcript else None,
-            scene_cut_mode=args.scene_cut, clean_feed=args.clean_feed, video=not args.no_video,
+            scene_cut_mode=args.scene_cut, scene_cut_kind=args.scene_cut_detector, clean_feed=args.clean_feed, video=not args.no_video,
             max_seconds=args.max_seconds,
         )
         if not opts.media.exists():
@@ -201,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         profile = load_input_profile(resolve_input_profile(cfg, args.input))
         print(profile.describe())
         print(f"\nЭффектов: {len(registry.effects)}, музыкальных состояний: {len(registry.music_states)}")
+        print(scenecut_status(cfg.raw.get("scene_cut") or {}))
         missing = [e.file for e in registry.effects.values() if not registry.path_of(e.file).exists()]
         missing += [s.file for s in registry.music_states.values() if s.file and not registry.path_of(s.file).exists()]
         if missing:
@@ -223,6 +236,28 @@ def main(argv: list[str] | None = None) -> int:
         webbrowser.open(url)
     run_panel(app, host, port)
     return 0
+
+
+def scenecut_status(sc: dict) -> str:
+    """Чем будет ловиться «монтаж»: обученной моделью (и есть ли для неё YOLO) или пикселями."""
+    import importlib.util
+
+    from .learn.model import CutModel
+    from .media.peoplecut import PeopleCutConfig
+
+    if str(sc.get("kind", "people")) != "people":
+        return "«Монтаж»: старый детектор по пикселям (scene_cut.kind: pixel)."
+    pc = PeopleCutConfig.from_dict(sc.get("people"))
+    if not Path(pc.model).exists():
+        return f"«Монтаж»: нет модели {pc.model} — работает детектор по пикселям (python -m soundmaster train-scenecut)."
+    info = CutModel.load(Path(pc.model)).info
+    c = info.get("check", {})
+    line = (f"«Монтаж»: модель {pc.model} (обучена {info.get('trained', '?')} на {info.get('videos', '?')} видео; "
+            f"на невиданных видео находит {c.get('recall', 0):.0%}, точность {c.get('precision', 0):.0%}).")
+    if importlib.util.find_spec("ultralytics") is None:
+        line += ("\n  Нет ultralytics — на шоу будет детектор по пикселям. Установить: pip install -e \".[learn]\""
+                 " (веса YOLO скачаются при первом запуске — сделайте это до шоу, с интернетом).")
+    return line
 
 
 def cli() -> int:

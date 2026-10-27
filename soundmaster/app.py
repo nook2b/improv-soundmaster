@@ -27,7 +27,7 @@ from .fastrules import FastRules
 from .listener import ASR_RATE, Listener
 from .media.asr import ASRWorker, make_asr
 from .media.ffmpeg import CameraReader
-from .media.scenecut import SceneCutConfig, SceneCutDetector
+from .media.peoplecut import make_scenecut
 from .media.vad import EnergyVAD
 from .journal import Journal
 from .music.director import MusicDirector
@@ -208,12 +208,12 @@ class App:
                                             SchedulerConfig.from_dict(bcfg))
         # Детектор строится при любой камере: режим OFF/SUGGEST/AUTO проверяет контроллер,
         # и включённый с пульта «монтаж» начинает работать сразу.
-        scenecut = SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector"))) if video_on else None
+        scenecut = make_scenecut(sc, lambda: self.controller.state.t_scene_start) if video_on else None
         self.listener = Listener(
             self.controller, self.journal, self.clock, None,
             vad=EnergyVAD(ASR_RATE, **(listen.get("vad") or {})),
             asr_worker=ASRWorker(asr, self.clock, lambda tr: None) if asr else None,
-            rules=FastRules(self.registry), scheduler=self.scheduler, scenecut=scenecut,
+            rules=FastRules(self.registry), scheduler=self.scheduler, scenecut=scenecut, threaded_cut=True,
         )
         if video_on:
             self.camera = CameraReader(str(vcfg.get("camera", "0")), float(vcfg.get("fps", 5)),
@@ -244,6 +244,8 @@ class App:
     async def detach_loop(self) -> None:
         if self.camera:
             self.camera.stop()
+        if self.listener and self.listener.cut_worker:
+            self.listener.cut_worker.stop()
         if self.listener and self.listener.asr_worker:
             self.listener.asr_worker.stop()
         if self.scheduler:
@@ -311,6 +313,9 @@ class App:
             "error": self.listen_error or (self.listener.asr_worker.last_error
                                            if self.listener and self.listener.asr_worker else None),
             "camera_error": self.camera.error if self.camera else None,
+            "scene_cut_detector": getattr(self.listener.scenecut, "kind", "pixel")
+            if self.listener and self.listener.scenecut else None,
+            "scene_cut_error": getattr(self.listener.scenecut, "error", None) if self.listener else None,
             "brain": self.scheduler.status() if self.scheduler else None,
         }
         return s

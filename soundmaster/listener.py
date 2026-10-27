@@ -17,6 +17,7 @@ from .controller import Controller
 from .fastrules import FastRules
 from .journal import Journal
 from .media.asr import ASRWorker, Transcript
+from .media.peoplecut import FrameWorker, PeopleCutDetector, PeopleCutEvent
 from .media.scenecut import SceneCutDetector, SceneCutEvent
 from .media.vad import EnergyVAD, Utterance
 
@@ -48,8 +49,9 @@ class Listener:
         asr_worker: ASRWorker | None = None,
         rules: FastRules | None = None,
         scheduler: BrainScheduler | None = None,
-        scenecut: SceneCutDetector | None = None,
+        scenecut: SceneCutDetector | PeopleCutDetector | None = None,
         synchronous: bool = False,
+        threaded_cut: bool = False,
     ):
         self.controller = controller
         self.journal = journal
@@ -60,6 +62,9 @@ class Listener:
         self.rules = rules
         self.scheduler = scheduler
         self.scenecut = scenecut
+        # нейросеть на кадрах — в своём потоке (живой режим: камера и пульт не ждут YOLO)
+        self.cut_worker = (FrameWorker(scenecut, lambda evs: self._post(self._on_people_cut, evs))
+                           if isinstance(scenecut, PeopleCutDetector) and threaded_cut else None)
         self.synchronous = synchronous  # прогон «быстрее реального времени»: всё в одном потоке
         self.recent: list[dict[str, Any]] = []  # последние реплики для пульта
         self.utterances = 0
@@ -127,10 +132,32 @@ class Listener:
     def feed_frame(self, t: float, rgb: np.ndarray) -> None:
         if self.scheduler:
             self.scheduler.on_frame(t, rgb)
-        if self.scenecut:
+        if self.cut_worker:
+            self.cut_worker.submit(t, rgb)
+        elif isinstance(self.scenecut, PeopleCutDetector):
+            evs = self.scenecut.push(t, rgb)
+            if evs:
+                self._post(self._on_people_cut, evs)
+        elif self.scenecut:
             ev = self.scenecut.push(t, rgb)
             if ev:
                 self._post(self._on_scene_cut, ev)
+
+    def _on_people_cut(self, evs: list[PeopleCutEvent]) -> None:
+        """Решения модели «монтажа» → контроллер (режим OFF/SUGGEST/AUTO и кулдаун проверяет он)."""
+        det = self.scenecut
+        for ev in evs:
+            self.journal.write("scene_cut_detected", detector=getattr(det, "kind", "people"), action=ev.action,
+                               stage=ev.stage, t=round(ev.t, 3), t_start=round(ev.t_start, 3),
+                               t_end=round(ev.t_end, 3), p=round(ev.p, 3),
+                               features={k: round(v, 3) for k, v in ev.features.items()},
+                               error=getattr(det, "error", None))
+            if ev.action in ("cut", "confirm", "late_cut"):
+                self.controller.scene_cut(f"people:{ev.action}", ev.p, ev.t)
+            elif ev.action == "dip":
+                self.controller.scene_cut_dip("people:dip", ev.p, ev.t)
+            elif ev.action == "reject":
+                self.controller.scene_cut_reject("people:reject", ev.p)
 
     def _on_scene_cut(self, ev: SceneCutEvent) -> None:
         self.journal.write("scene_cut_detected", t=round(ev.t, 3), t_start=round(ev.t_start, 3),

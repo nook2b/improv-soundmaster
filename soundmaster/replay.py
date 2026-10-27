@@ -31,7 +31,7 @@ from .journal import Journal
 from .listener import ASR_RATE, Listener
 from .media.asr import ASR, ASRWorker, ScriptedASR, load_transcript_file, make_asr
 from .media.ffmpeg import probe, read_audio_blocks, read_video_frames
-from .media.scenecut import SceneCutConfig, SceneCutDetector
+from .media.peoplecut import make_scenecut
 from .media.vad import EnergyVAD
 from .music.director import MusicDirector
 from .registry import load_registry
@@ -51,6 +51,7 @@ class ReplayOptions:
     brain: str | None = None
     transcript: Path | None = None
     scene_cut_mode: str | None = None
+    scene_cut_kind: str | None = None  # people | pixel (по умолчанию — из show.yaml)
     clean_feed: bool = False
     video: bool = True
     out_dir: Path | None = None
@@ -115,13 +116,14 @@ class Replay:
 
         scenecut = None
         if opts.video and self.info.has_video and (sc.get("mode", "SUGGEST") != "OFF" or opts.scene_cut_mode):
-            scenecut = SceneCutDetector(SceneCutConfig.from_dict(sc.get("detector")))
+            sc_kind = {**sc, "kind": opts.scene_cut_kind} if opts.scene_cut_kind else sc
+            scenecut = make_scenecut(sc_kind, lambda: self.controller.state.t_scene_start)
         vad_cfg = listen.get("vad") or {}
         self.listener = Listener(
             self.controller, self.journal, self.clock, None,
             vad=EnergyVAD(ASR_RATE, **vad_cfg), asr_worker=self.asr_worker,
             rules=FastRules(self.registry), scheduler=self.scheduler, scenecut=scenecut,
-            synchronous=self.fast,
+            synchronous=self.fast, threaded_cut=not self.fast,
         )
         self.feeder_error: str | None = None
         self.video_fps = float((cfg.raw.get("video") or {}).get("fps", 5))
@@ -259,6 +261,8 @@ class Replay:
             sched_task.cancel()
         if self.asr_worker:
             await asyncio.to_thread(self.asr_worker.stop)  # join не на потоке цикла
+        if self.listener.cut_worker:
+            await asyncio.to_thread(self.listener.cut_worker.stop)
         out.stop()
         return last["t"]
 

@@ -541,3 +541,41 @@ def test_hotkey_duplicates_are_case_insensitive(tmp_path):
     p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     with pytest.raises(RegistryError, match="клавиша"):
         load_registry(p)
+
+
+def test_scene_cut_dip_then_reject_brings_music_back(system, clock):
+    c = neutral_auto(system)
+    style(c, NOIR, clock)
+    clock.advance(c.scene_cut_cooldown + 1)
+    scene = c.state.scene_id
+    assert c.scene_cut_dip("people:dip", 0.55).result == "dipped"
+    assert c.music.dipped and c.state.scene_id == scene  # сцена не меняется, музыка только тише
+    assert c.scene_cut_reject("people:reject", 0.2).result == "rejected"
+    assert not c.music.dipped and c.music.current("music").id == f"style:{NOIR.id}"
+    clock.advance(0.1)
+    c.tick()
+    assert c.music._dip_until is None
+
+
+def test_scene_cut_dip_then_confirm_starts_new_scene(system, clock):
+    c = neutral_auto(system)
+    style(c, NOIR, clock)
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.scene_cut_dip("people:dip", 0.55)
+    clock.advance(6)
+    assert c.scene_cut("people:confirm", 0.7).result == "started"
+    assert c.music.current("music").id.startswith("style:underscore")
+
+
+def test_scene_cut_dip_respects_mode_and_stop_ai(system, clock):
+    c = neutral_auto(system)
+    style(c, NOIR, clock)
+    clock.advance(c.scene_cut_cooldown + 1)
+    c.set_scene_cut_mode("SUGGEST")
+    assert c.scene_cut_dip("people:dip", 0.55).result == "suggested"  # человек решает сразу
+    assert not c.music.dipped
+    c.set_scene_cut_mode("AUTO")
+    c.state.suggestions.clear()
+    assert c.scene_cut_dip("people:dip", 0.55).result == "dipped"
+    c.set_automation(False)  # «Стоп AI»: музыку ведёт человек — приглушение снимается
+    assert not c.music.dipped

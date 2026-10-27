@@ -72,6 +72,7 @@ class MusicDirector:
         self.cut_dip_hold = cut_dip_hold
         self.cut_rise = cut_rise
         self._dip_until: float | None = None
+        self._dip_since: float | None = None  # приглушение «ждём проверки монтажа» (hold_dip)
         self._pool_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._pool_cache_size = pool_cache
         self._pool_loading: dict[str, Future] = {}
@@ -108,8 +109,12 @@ class MusicDirector:
                 # Генератор уже играет: меняем состояние без остановки потока.
                 now = self.engine.clock.now()
                 if cut and cur.voice_id is not None:
+                    # музыка уже давно приглушена (ждали проверки монтажа) — новая поднимается быстрее
+                    held = (self._dip_until is not None and self._dip_since is not None
+                            and now - self._dip_since >= self.cut_dip_fade)
                     self.engine.mixer.fade(cur.voice_id, self.cut_dip_gain, self.cut_dip_fade)
-                    self._dip_until = now + self.cut_dip_hold
+                    self._dip_until = now + (1.5 if held else self.cut_dip_hold)
+                    self._dip_since = None
                 elif self._dip_until is not None:
                     cut = True  # выбор модели, пока громкость в провале, — тоже сразу
                     self._dip_until = max(self._dip_until, now + 1.5)
@@ -229,6 +234,30 @@ class MusicDirector:
         self._start_file(state, owner)  # генератор (играющий или ждущий буфера) остановит сам
         return "pool"
 
+    def hold_dip(self, timeout: float = 10.0) -> bool:
+        """Приглушить музыку, пока детектор проверяет «монтаж» (как провал при смене сцены, но генератор
+        не меняется). Дальше — смена сцены (play_state с cut) или release_dip; не дольше timeout с."""
+        cur = self.active.get("music")
+        if not cur or cur.voice_id is None:
+            return False
+        now = self.engine.clock.now()
+        self.engine.mixer.fade(cur.voice_id, self.cut_dip_gain, self.cut_dip_fade)
+        self._dip_until = now + timeout
+        self._dip_since = now
+        self.journal.write("music", action="dip_hold", state=cur.state.id, timeout=timeout)
+        return True
+
+    def release_dip(self) -> None:
+        """Монтажа не было: музыка поднимается обратно (на следующем tick)."""
+        if self._dip_until is not None and self._dip_since is not None:
+            self._dip_until = self.engine.clock.now()
+            self._dip_since = None
+            self.journal.write("music", action="dip_release")
+
+    @property
+    def dipped(self) -> bool:
+        return self._dip_until is not None and self._dip_since is not None
+
     def channel_source(self, channel: str) -> str | None:
         cur = self.active.get(channel)
         return cur.source if cur else None
@@ -320,6 +349,7 @@ class MusicDirector:
         self._pool_tick()
         if self._dip_until is not None and self.engine.clock.now() >= self._dip_until:
             self._dip_until = None
+            self._dip_since = None
             cur = self.active.get("music")
             if cur and cur.voice_id is not None:
                 self.engine.mixer.fade(cur.voice_id, 1.0, self.cut_rise)
