@@ -45,7 +45,9 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_usd": round(cost, 4),
         "cost_per_hour_usd": round(cost / duration * 3600, 2) if duration > 0 else None,
         "decisions": dict(Counter(f"{r.get('call')}:{r.get('result')}" for r in dec)),
-        "scene_cuts": sum(1 for r in records if r["kind"] == "scene_cut_detected"),
+        # старый детектор пишет только найденные проходы; модель — каждый шаг (cut/dip/confirm/reject/none…)
+        "scene_cuts": sum(1 for r in records if r["kind"] == "scene_cut_detected"
+                          and r.get("action", "cut") in ("cut", "confirm", "late_cut")),
         "new_scenes": sum(1 for r in records if r.get("action") == "new_scene"),
     }
 
@@ -74,7 +76,12 @@ def timeline(records: list[dict[str, Any]]) -> list[tuple[float, str, str, str]]
             note = f"{r['latency']} с, ${r['cost']}" + (f" — ОШИБКА {r['error']}" if r.get("error") else "")
             rows.append((r["t"] - t0, "модель", acts, note))
         elif k == "scene_cut_detected":
-            rows.append((r["t"] - t0, "монтаж", f"проход {r['direction']}", f"уверенность {r['confidence']}"))
+            if "action" in r:  # модель по людям в кадре (media/peoplecut.py): шаг и решение
+                if r["action"] != "none":
+                    rows.append((r["t"] - t0, "монтаж", f"{r['stage']}: {r['action']}",
+                                 f"вероятность {r['p']}" + (f" (YOLO: {r['error']})" if r.get("error") else "")))
+            else:
+                rows.append((r["t"] - t0, "монтаж", f"проход {r['direction']}", f"уверенность {r['confidence']}"))
         elif k in ("system", "operator") and r.get("action") == "new_scene":
             rows.append((r["t"] - t0, "сцена", f"новая сцена {r['scene_id']}", r.get("source", "")))
         elif k == "rule_negated":
