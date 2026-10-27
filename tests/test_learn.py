@@ -317,3 +317,80 @@ def test_git_sync_commits_pulls_and_pushes(tmp_path):
     assert not (claude / "notes.txt").exists()
     assert (ivan / "code.py").read_text(encoding="utf-8") == "x = 2\n"  # забрал и правки Claude
     assert sync.push().message == "всё отправлено"
+
+
+def test_collect_recollects_video_whose_manual_mark_has_no_candidate(tmp_path, monkeypatch):
+    from soundmaster.learn import collect as col
+
+    entries = [{"id": v, "title": f"Компот {v}", "duration": 100, "url": v} for v in ("a", "b")]
+    monkeypatch.setattr(col, "playlist", lambda url: entries)
+    monkeypatch.setattr(col, "ffmpeg_bin", lambda name="ffmpeg": "ffmpeg")
+    seen = []
+    monkeypatch.setattr(col, "process", lambda src, vid, *a, **kw: seen.append(vid) or {"candidates": []})
+    (tmp_path / "manual.json").write_text('{"a": [50.0], "b": [50.0]}', encoding="utf-8")
+    done = {"version": col.VERSION, "seconds": 100, "manual": [50.0]}
+    # «a»: отметка в списке сбора есть, а кандидата по ней нет (старый сбор её потерял) — собрать заново
+    (tmp_path / "a.json").write_text(json.dumps({**done, "candidates": []}), encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps({**done, "candidates": [
+        {"t_start": 47.0, "t_end": 49.0, "t_pass_end": 51.0, "sources": ["manual", "people"]}]}), encoding="utf-8")
+    col.collect(["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips",
+                progress=lambda s: None, detector_factory=lambda: None)
+    assert seen == ["a"]
+
+
+def _cand(cid, t0, actors_after, track=9, sources=("people",)):
+    """Кандидат в формате сбора: двое стоят, бегун 9 пересекает кадр, потом актёры уходят или остаются."""
+    fr = ([_scene(t0 - 3 + t / 5) for t in range(15)] + [_scene(t0 + k * 0.2, 0.05 + 0.15 * k) for k in range(7)]
+          + [_scene(t0 + 1.4 + t / 5, actors=actors_after) for t in range(40)])
+    return {"id": cid, "t_start": t0, "t_end": t0 + 1.2, "t_pass_end": t0 + 1.2, "track": track,
+            "sources": list(sources), "features": {"height": 0.8, "top": 0.15, "span": 0.9, "moved": 1.0, "pixel": 0.0},
+            "frames": [[t, {str(k): list(b) for k, b in bx.items()}] for t, bx in fr]}
+
+
+def test_eval_dataset_scores_best_person_and_counts_missed_cuts(tmp_path):
+    from soundmaster.learn import evaluate as ev
+
+    cands = [_cand("v_000100", 10.0, ()), _cand("v_000600", 60.0, (0.3, 0.6)),
+             _cand("v_001000", 100.0, (), track=1), _cand("v_001500", 150.0, (), track=-1, sources=("manual",))]
+    (tmp_path / "v.json").write_text(json.dumps({"video": "v", "title": "Компот", "seconds": 1800,
+                                                 "candidates": cands}), encoding="utf-8")
+    (tmp_path / "ut93p5RVE0A.json").write_text(json.dumps({"video": "ut93p5RVE0A", "candidates": [
+        _cand("ut93p5RVE0A_000100", 10.0, ())]}), encoding="utf-8")  # шоу 2 — не учим
+    (tmp_path / "labels.json").write_text(json.dumps({"v_000100": "cut", "v_000600": "no", "v_001000": "cut",
+                                                      "v_001500": "cut", "ut93p5RVE0A_000100": "no"}), encoding="utf-8")
+    (tmp_path / "tracks.json").write_text('{"v_001000": "9"}', encoding="utf-8")  # программа выбрала стоящего
+    (tmp_path / "manual.json").write_text('{"v": [150.0, 300.0]}', encoding="utf-8")  # 300 — ещё не собрано
+    [v] = ev.load_dataset(tmp_path)
+    assert v.video == "v" and v.hours == 0.5 and v.missed == 1
+    s = {x.cid: x for x in v.samples}
+    assert s["v_000100"].cut and not s["v_000600"].cut and s["v_001500"].forced and not s["v_000100"].forced
+    wrong = s["v_001000"]
+    assert wrong.auto["span"] < 0.1 and wrong.own["span"] > 0.8  # учим по указанному Иваном
+    assert max(f["span"] for f in wrong.people) > 0.8  # на проверке его видно и без подсказки
+
+    class BySpan:  # «модель»: уверенность = пройденная ширина
+        def predict_proba(self, X):
+            return np.column_stack([1 - X[:, 0], X[:, 0]])
+
+    prob = {t: ev.predict(BySpan(), v.samples, ("span",), t) for t in ev.TESTS}
+    i = [x.cid for x in v.samples].index("v_001000")
+    assert prob["max"][i] > 0.8 and prob["own"][i] > 0.8 and prob["auto"][i] < 0.1
+    sc = ev.score(v, prob["max"], 0.5)
+    # монтажи: 2 показаны и найдены, 2 пропущены отбором (по M с кандидатом и без); бегун в «нет» — ложная тревога
+    assert (sc.found, sc.shown, sc.missed, sc.false, sc.nots) == (2, 2, 2, 1, 1)
+    assert sc.cuts == 4 and sc.precision == pytest.approx(2 / 3)
+
+
+def test_eval_leave_one_out_runs_on_labels(tmp_path):
+    pytest.importorskip("sklearn")
+    from soundmaster.learn import evaluate as ev
+
+    labels = {}
+    for vid in ("a", "b", "c"):
+        cands = [_cand(f"{vid}_{k:06d}", 10.0 * k, () if k % 2 else (0.3, 0.6)) for k in range(1, 9)]
+        (tmp_path / f"{vid}.json").write_text(json.dumps({"video": vid, "title": vid, "seconds": 3600,
+                                                         "candidates": cands}), encoding="utf-8")
+        labels.update({c["id"]: "cut" if k % 2 else "no" for k, c in enumerate(cands, 1)})
+    (tmp_path / "labels.json").write_text(json.dumps(labels), encoding="utf-8")
+    out = ev.report(tmp_path, thresholds=(0.5,), early=False)
+    assert "ИТОГО" in out and " 12/12 " in out  # актёры ушли после прохода — монтаж, остались — нет

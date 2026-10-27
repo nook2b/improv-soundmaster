@@ -316,6 +316,11 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     return result
 
 
+def covers(c: dict, tm: float) -> bool:
+    """Кандидат создан ручной отметкой tm (секунда записи) или помечен ею — см. add_manual в process."""
+    return "manual" in c.get("sources", []) and c["t_start"] - 6 <= tm <= max(c["t_end"], c.get("t_pass_end", 0)) + 6
+
+
 def first_seen(track: int, log: list[tuple[float, dict[int, Box]]], t_start: float, limit: float = 4.0) -> float:
     """Когда этот человек появился в кадре: идём назад от начала прохода, пока он виден (не дальше limit с)."""
     seen = t_start
@@ -412,8 +417,12 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
             d = json.loads(p.read_text(encoding="utf-8"))
         except ValueError:
             return False
-        # новые ручные отметки пропущенных монтажей — видео собирается заново
-        return d.get("version", 1) >= VERSION and set(manual.get(e["id"], [])) <= set(d.get("manual", []))
+        # новые ручные отметки пропущенных монтажей — видео собирается заново; так же — если по отметке
+        # нет кандидата (старый сбор её потерял: «Компот 9», 54:00, сбор 2026-10-26)
+        marks = manual.get(e["id"], [])
+        return (d.get("version", 1) >= VERSION and set(marks) <= set(d.get("manual", []))
+                and all(tm > d.get("seconds", 0) or any(covers(c, tm) for c in d.get("candidates", []))
+                        for tm in marks))
 
     todo = [e for e in items if not ready(e)]
     ready = len(items) - len(todo)

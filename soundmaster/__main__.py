@@ -80,6 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     ls_.add_argument("--clips", default="recordings/scenecut_clips")
     ls_.add_argument("--port", type=int, default=8766)
     ls_.add_argument("--no-push", action="store_true", help="не отправлять отметки на GitHub самому")
+    es = sub.add_parser("eval-scenecuts", help="проверить детектор «монтажа» по разметке (учим без одного видео)")
+    es.add_argument("--out", default="data/scenecut")
+    es.add_argument("--threshold", type=float, nargs="+", default=[0.6, 0.65], help="пороги уверенности")
+    es.add_argument("--test", choices=["max", "auto", "own"], default="max",
+                    help="кого оценивать на проверке: max — лучшего из людей в окне (как на шоу), auto — кого "
+                         "выбрала программа, own — кого указал Иван (завышает результат)")
+    es.add_argument("--curve", action="store_true", help="ещё и кривая: результат от числа видео в обучении")
     args = p.parse_args(argv)
 
     if args.cmd == "collect-scenecuts":
@@ -100,6 +107,16 @@ def main(argv: list[str] | None = None) -> int:
         from .learn.label import serve
 
         serve(Path(args.out), Path(args.clips), port=args.port, push=not args.no_push)
+        return 0
+
+    if args.cmd == "eval-scenecuts":
+        from .learn.evaluate import report
+
+        try:
+            print(report(Path(args.out), tuple(args.threshold), test=args.test, curve=args.curve))
+        except ImportError as e:
+            print(f"Ошибка: {e}. Нужно: pip install -e \".[learn]\"")
+            return 1
         return 0
 
     if args.cmd == "devices":
