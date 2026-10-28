@@ -459,6 +459,9 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
     ffmpeg_bin()
     make = detector_factory or (lambda: YoloPeople(model))
     embedder = embedder_factory() if embedder_factory else default_embedder(progress)
+    if embedder is None:
+        progress("ВНИМАНИЕ: сбор идёт без описания кадра. Остановите (Ctrl+C), установите pip install -e \".[learn]\" "
+                 "и запустите снова — иначе эти видео придётся собирать ещё раз.")
     items: list[dict] = []
     for s in sources:
         if is_url(s):
@@ -486,8 +489,10 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
             d = json.loads(p.read_text(encoding="utf-8"))
         except ValueError:
             return False
-        # новые ручные отметки пропущенных монтажей — видео собирается заново
-        return d.get("version", 1) >= VERSION and set(manual.get(e["id"], [])) <= set(d.get("manual", []))
+        # новые ручные отметки пропущенных монтажей — видео собирается заново; собрано без описания кадра,
+        # а сейчас оно работает (поставили timm) — тоже заново
+        return (d.get("version", 1) >= VERSION and set(manual.get(e["id"], [])) <= set(d.get("manual", []))
+                and (embedder is None or bool(d.get("embedder"))))
 
     todo = [e for e in items if not ready(e)]
     ready = len(items) - len(todo)
