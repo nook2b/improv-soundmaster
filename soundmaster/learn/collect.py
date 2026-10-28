@@ -27,15 +27,17 @@ from typing import Callable, Iterator
 import numpy as np
 
 from ..media.download import is_url
+from .signals import AUDIO_SR, AudioTrack, pack, pack_pose, pose_points
 from ..media.ffmpeg import ffmpeg_bin
 from ..media.scenecut import SceneCutConfig, SceneCutDetector
 from .passes import Box, FastTracker, PassCandidate, PassFinder, is_scenecut_candidate, merge, pass_end, pass_features
 
 W, H = 640, 360  # размер кадров для анализа и роликов
-VERSION = 3  # версия отбора/роликов: данные старой версии собираются заново (разметка переносится по времени)
+VERSION = 4  # версия отбора/данных: старые собираются заново (разметка переносится по времени); 4 — поза, звук, кадр
 BEFORE, AFTER = 3.0, 7.0  # сколько секунд до и после прохода смотреть, кто стоит на сцене
 MAX_SPAN = 12.0  # кандидат (с учётом слияния соседних) не длиннее — иначе не помещается в журнал рамок
 MAX_CLIP = 7.0  # ролик для разметки: ~5–7 с, с момента, как человек появился в кадре (Иван: 8 с — много)
+EMB_EVERY = 0.5  # описание кадра: из кадров раз в 0,5 с (считается только для кандидатов)
 WIDE_BEFORE = 5.0  # «Шире» на странице разметки: столько секунд до прохода и AFTER после —
 # видно, вышел ли человек из-за кулис и ушли ли потом актёры
 # Старый детектор по пикселям — с мягкими порогами, только чтобы не пропустить кандидатов.
@@ -70,6 +72,15 @@ def is_show(title: str) -> bool:
 def ordered(entries: list[dict]) -> list[dict]:
     """Сначала шоу (так будет на площадке), потом занятия — в порядке плейлиста (новые первыми)."""
     return sorted(entries, key=lambda e: not is_show(e["title"]))
+
+
+def audio_cmd(source: str) -> list[list[str]]:
+    """Команды звукового потока (моно 16 кГц, s16le): из ссылки — отдельно только звук (yt-dlp), из файла — ffmpeg."""
+    ff = [ffmpeg_bin(), "-v", "error", "-i", "pipe:0" if is_url(source) else source, "-vn", "-ac", "1",
+          "-ar", str(AUDIO_SR), "-f", "s16le", "-"]
+    if is_url(source):
+        return [[ytdlp_bin(), "-q", "--no-warnings", "--no-playlist", "-f", "ba/b", "-o", "-", source], ff]
+    return [ff]
 
 
 def frames(source: str, fps: float) -> Iterator[tuple[float, np.ndarray]]:
@@ -123,7 +134,8 @@ class YoloPeople:
 
     # yolo11s, а не n: на проходе перед камерой человек смазан и обрезан краем кадра — «s» находит его
     # надёжнее, а медленнее всего в ~1,6 раза (замер 2026-10-24: 36 против 23 мс на кадр на CPU).
-    def __init__(self, model: str = "yolo11s.pt", imgsz: int = 416, conf: float = 0.25):
+    # -pose: те же рамки людей плюс точки тела (решение Ивана 2026-10-28), скорость та же (59 против 58 мс).
+    def __init__(self, model: str = "yolo11s-pose.pt", imgsz: int = 416, conf: float = 0.25):
         if model not in _MODELS:
             from ultralytics import YOLO  # type: ignore
 
@@ -132,12 +144,21 @@ class YoloPeople:
         self.imgsz, self.conf = imgsz, conf
         self.tracker = FastTracker()
         self.name = Path(model).stem
+        self.last_pose: dict[int, list[float]] = {}  # точки тела людей последнего кадра (если модель -pose)
 
     def __call__(self, rgb: np.ndarray, t: float) -> dict[int, Box]:
         r = self.model.predict(rgb[..., ::-1], classes=[0], imgsz=self.imgsz, conf=self.conf,  # type: ignore[attr-defined]
                                verbose=False)[0]
         dets = [tuple(float(v) for v in b) for b in r.boxes.xyxyn.cpu().numpy()] if r.boxes is not None else []
-        return self.tracker.update(t, dets)  # type: ignore[arg-type]
+        kps: list[list[float] | None] = [None] * len(dets)
+        if getattr(r, "keypoints", None) is not None and len(r.keypoints.xyn) == len(dets):
+            conf = r.keypoints.conf.cpu().numpy() if r.keypoints.conf is not None else None
+            xy = r.keypoints.xyn.cpu().numpy()
+            kps = [pose_points(xy[i], conf[i] if conf is not None else None) for i in range(len(dets))]
+        boxes = self.tracker.update(t, dets)  # type: ignore[arg-type]
+        by_box = {d: k for d, k in zip(dets, kps) if k is not None}
+        self.last_pose = {tid: by_box[b] for tid, b in boxes.items() if b in by_box}
+        return boxes
 
 
 def draw_box(rgb: np.ndarray, box: Box, color=(255, 220, 0), t: int = 2) -> np.ndarray:
@@ -181,19 +202,26 @@ def manual_candidate(tm: float, log: list[tuple[float, dict[int, Box]]]) -> Pass
 
 def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, detector: Callable,
             fps: float = 10.0, detect_every: int = 2, progress: Callable[[str], None] = print,
-            duration: float = 0.0, manual: list[float] | None = None, save_clips: bool = False) -> dict:
+            duration: float = 0.0, manual: list[float] | None = None, save_clips: bool = False,
+            embedder: Callable[[np.ndarray], np.ndarray] | None = None, audio: bool = True) -> dict:
     """Пройти одно видео: кандидаты → ролики + рамки людей. Возвращает и пишет <out_dir>/<vid>.json.
 
     manual — моменты (секунды записи), которые Иван отметил как пропущенный монтаж: по ним кандидат
     создаётся всегда, без отбора, и сразу получает метку «монтаж».
     save_clips — нарезать ролики mp4 (страница разметки их больше не использует: видео играет с YouTube,
     рамки рисуются поверх; ролики нужны только для записей не с YouTube).
+    embedder — описание кадра (signals.FrameEmbedder): считается только для кандидатов, в EMB_AT моментах.
+    audio — признаки звука (signals.AudioTrack) вокруг кандидата; нет звука — без них.
     """
     manual_q = sorted(manual or [])
     # кандидат не длиннее MAX_SPAN (merge), плюс запас до/после: журнал рамок и кадры должны его вмещать
     keep_s = WIDE_BEFORE + MAX_SPAN + AFTER + 6
     ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(fps * keep_s) if save_clips else 1)
     log: deque[tuple[float, dict[int, Box]]] = deque(maxlen=int(fps / detect_every * keep_s))
+    pose_log: deque[tuple[float, dict[int, list[float]]]] = deque(maxlen=log.maxlen)
+    emb_ring: deque[tuple[float, np.ndarray]] = deque(maxlen=int(keep_s / EMB_EVERY) + 2)  # кадры 2 раза в с
+    emb_cache: dict[float, np.ndarray] = {}
+    track_audio = AudioTrack(audio_cmd(source) if audio else None)
     finder, pixel = PassFinder(), SceneCutDetector(LOOSE_PIXEL)
     pending: list[PassCandidate] = []
     done: list[dict] = []
@@ -241,13 +269,32 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
             if len(wide) > len(imgs):
                 write_clip(clip_dir / f"{cid}_wide.mp4", wide, fps)
                 wide_clip = f"{cid}_wide.mp4"
+        extra: dict = {}
+        # точки тела крупных людей (как актёры в pass_features) — от начала прохода до 3 с после; сжато (pack_pose)
+        big = {lt: {k for k, b in bx.items() if b[3] - b[1] > 0.3} for lt, bx in log}
+        pw = [[round(lt, 2), {str(k): pack_pose(kp) for k, kp in kps.items() if k in big.get(lt, ())}]
+              for lt, kps in pose_log if c.t_start - 1.0 <= lt <= end + 3.0]
+        if any(p for _, p in pw):
+            extra["pose"] = pw
+        if embedder is not None and emb_ring:
+            moments = [c.t_start - 2.0, c.t_start, c.t_end, end, end + 2.0]
+            vecs = []
+            for m in moments:
+                ft, img = min(emb_ring, key=lambda f: abs(f[0] - m))
+                if ft not in emb_cache:
+                    emb_cache[ft] = embedder(img)
+                vecs.append(emb_cache[ft])
+            extra["emb"] = {"t": [round(m, 2) for m in moments], "v": pack(vecs)}
+        aud = track_audio.window(c.t_start - 8.0, end + 3.0)
+        if aud:
+            extra["audio"] = aud
         done.append({"id": cid, "clip": clip, "clip_wide": wide_clip,
                      "t_clip": round(a, 2), "t_seen": round(seen, 2), "t_pass_end": round(end, 2),
                      **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in asdict(c).items()},
                      "features": {k: round(float(v), 3) for k, v in feats.items()},
                      "frames": [[round(lt, 2), {str(k): [round(v, 3) for v in bx] for k, bx in bxs.items()
                                                 if bx[3] - bx[1] > 0.12}]  # мелкие фигуры в глубине не нужны
-                                for lt, bxs in window]})
+                                for lt, bxs in window], **extra})
 
     def add_manual(tm: float) -> None:
         """Ручная отметка: тот же кандидат, если программа уже нашла проход в этом месте (как кнопка M
@@ -264,12 +311,15 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
 
     for i, (t, rgb) in enumerate(frames(source, fps)):
         ring.append((t, rgb))
+        if embedder is not None and (not emb_ring or t - emb_ring[-1][0] >= EMB_EVERY - 1e-6):
+            emb_ring.append((t, rgb))
         ev = pixel.push(t, rgb)
         if ev:
             pending.append(PassCandidate(ev.t_start, ev.t, -1, ev.travel, ev.height, ["pixel"]))
         if i % detect_every == 0:
             boxes = detector(rgb, t)
             log.append((t, boxes))
+            pose_log.append((t, dict(getattr(detector, "last_pose", None) or {})))
             pending += finder.push(t, boxes)
         while manual_q and t >= manual_q[0] + 4.0:
             add_manual(manual_q.pop(0))
@@ -292,7 +342,10 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     if duration and t < duration - 60:
         # поток кончился раньше видео: не трогаем прошлый сбор и разметку этого видео
         raise RuntimeError(f"поток оборвался на {t / 60:.0f} мин из {duration / 60:.0f}")
+    track_audio.close()
     result = {"video": vid, "title": title, "version": VERSION, "detector": getattr(detector, "name", ""),
+              "embedder": getattr(embedder, "name", None) if embedder else None,
+              "audio": track_audio.error or bool(track_audio.feats),
               "source": source if is_url(source) else Path(source).name, "seconds": round(t, 1), "fps": fps,
               "detect_fps": fps / detect_every, "size": [W, H], "made": time.strftime("%Y-%m-%d %H:%M"),
               "skipped": skipped, "manual": sorted(manual or []), "candidates": done}
@@ -314,6 +367,17 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     tmp.replace(out_dir / f"{vid}.json")
     return result
+
+
+def default_embedder(progress: Callable[[str], None] = print):
+    """Описание кадра (DINOv2) — если установлен timm; иначе сбор идёт без него (с предупреждением)."""
+    from .signals import FrameEmbedder
+
+    try:
+        return FrameEmbedder()
+    except Exception as e:  # noqa: BLE001
+        progress(f"Описание кадра не включено ({type(e).__name__}: {e}) — установите: pip install -e \".[learn]\"")
+        return None
 
 
 def first_seen(track: int, log: list[tuple[float, dict[int, Box]]], t_start: float, limit: float = 4.0) -> float:
@@ -385,11 +449,16 @@ def carry_labels(out_dir: Path, vid: str, new: list[dict], progress: Callable[[s
 
 def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None = None, only_shows: bool = False,
             fps: float = 10.0, progress: Callable[[str], None] = print,
-            detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s.pt",
-            save_clips: bool = False, push: bool = False) -> list[dict]:
-    """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются."""
+            detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s-pose.pt",
+            save_clips: bool = False, push: bool = False, labeled_only: bool = False,
+            embedder_factory: Callable[[], Callable | None] | None = None) -> list[dict]:
+    """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются.
+
+    labeled_only — только видео, где уже есть разметка (пересбор для новых признаков: размечать заново не нужно).
+    """
     ffmpeg_bin()
     make = detector_factory or (lambda: YoloPeople(model))
+    embedder = embedder_factory() if embedder_factory else default_embedder(progress)
     items: list[dict] = []
     for s in sources:
         if is_url(s):
@@ -400,6 +469,11 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
     items = ordered(items)
     if only_shows:
         items = [e for e in items if is_show(e["title"])]
+    if labeled_only:
+        from .label import load_labels
+
+        labeled = {cid.rsplit("_", 1)[0] for cid in load_labels(out_dir)}
+        items = [e for e in items if e["id"] in labeled]
     from .label import load_manual
 
     manual = load_manual(out_dir)
@@ -427,7 +501,7 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
         try:
             r = process(e["url"], e["id"], e["title"], out_dir, clip_dir, make(), fps=fps, progress=progress,
                         manual=manual.get(e["id"], []), save_clips=save_clips,
-                        duration=e["duration"])
+                        duration=e["duration"], embedder=embedder)
         except Exception as ex:  # noqa: BLE001 — одно видео не должно останавливать остальные
             progress(f"  пропущено: {type(ex).__name__}: {str(ex)[:300]} — прошлый сбор и разметка этого видео "
                      "не тронуты, при следующем запуске видео будет пройдено заново")

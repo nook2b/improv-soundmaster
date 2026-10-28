@@ -23,7 +23,9 @@ from typing import Callable, Sequence
 
 from .passes import Frames, LivePass, LivePasses, pass_features
 
-FAST_AFTER = 1.0
+# 0 с: решение — в момент, когда проход распознан; проверено 2026-10-28 на 0 / 0,5 / 1 с — без ожидания
+# точность не хуже (81% против 78%), а сразу решается больше монтажей (Иван: главное — быстродействие)
+FAST_AFTER = 0.0
 # 3, а не 7 с (= collect.AFTER, сколько кадров хранится): проверено 2026-10-28 на 2–7 с — точность та же,
 # а сомнительный монтаж подтверждается на 4 с раньше (Иван: ждать долго — странно)
 FULL_AFTER = 3.0
@@ -32,7 +34,7 @@ MAX_AGE = 600.0  # «время сцены» дольше 10 минут не р�
 # признаки по порядку: проход (pass_features) + сколько секунд идёт текущая сцена
 FEATURES = ("dur", "edge_in", "edge_out", "height", "moved", "net", "occlusion", "people_after", "people_before",
             "pixel", "span", "speed", "straight", "top", "bottom", "vis", "scene_age")
-SKIP_FILES = {"labels.json", "manual.json", "tracks.json"}
+SKIP_FILES = {"labels.json", "manual.json", "tracks.json", "ignore.json"}
 
 
 @dataclass
@@ -134,19 +136,22 @@ def live_features(frames: Frames, pixel: bool, scene_age: float, near: tuple[flo
 
 def examples(data_dir: Path, progress: Callable[[str], None] | None = None) -> list[Example]:
     """Размеченные кандидаты (cut / cut_other / no) с признаками — такими, какими их увидел бы детектор на шоу."""
-    from .label import load_labels, load_manual, load_tracks
+    from .label import ignored, load_ignore, load_labels, load_manual, load_tracks
 
     labels, tracks, manual = load_labels(data_dir), load_tracks(data_dir), load_manual(data_dir)
+    skip = load_ignore(data_dir)
     out, lost = [], 0
     for p in sorted(data_dir.glob("*.json")):
         if p.name in SKIP_FILES:
             continue
         d = json.loads(p.read_text(encoding="utf-8"))
         vid = d.get("video", p.stem)
-        cands = d.get("candidates", [])
-        # начала сцен — размеченные монтажи и ручные отметки: «время сцены» как на шоу
+        off = skip.get(vid, [])
+        cands = [c for c in d.get("candidates", []) if not ignored(off, c["t_start"])]
+        # начала сцен — размеченные монтажи, ручные отметки и концы пропущенных отрезков (разминка
+        # кончилась — пошли сцены): «время сцены» как на шоу
         cuts = sorted([c["t_start"] for c in cands if labels.get(c["id"]) in ("cut", "cut_other")]
-                      + list(manual.get(vid, [])))
+                      + [t for t in manual.get(vid, []) if not ignored(off, t)] + [b for _, b in off])
         for c in cands:
             lab = labels.get(c["id"])
             if lab not in ("cut", "cut_other", "no"):

@@ -47,7 +47,7 @@ def test_two_step_decisions(fast, full, leave, expected):
     det = PeopleCutDetector(const_model(fast, full), scene(leave), PeopleCutConfig())
     evs = run(det)
     assert [e.action for e in evs] == expected
-    assert evs[0].stage == "fast" and 6.0 <= evs[0].t <= 8.0  # ~1 с после прохода
+    assert evs[0].stage == "fast" and 5.3 <= evs[0].t <= 6.5  # сразу, как проход распознан (ещё во время прохода)
     if len(evs) > 1:
         assert evs[1].stage == "full" and evs[1].t >= evs[0].t + 1.5
 
@@ -134,3 +134,20 @@ def test_training_features_are_the_detectors_features():
     assert evs[0].features == pytest.approx({**fast, "scene_age": evs[0].features["scene_age"]})
     assert evs[1].features == pytest.approx({**full, "scene_age": evs[1].features["scene_age"]})
     assert live_features(frames[:20], False, 30.0, (5.0, 6.2)) is None  # прохода в этих кадрах нет
+
+
+def test_report_reads_model_scene_cut_records(tmp_path):
+    """Регрессия: отчёт падал на записях модели «монтажа» (в них нет direction/confidence)."""
+    from soundmaster.report import summarize, write_html
+
+    recs = [{"kind": "scene_cut_detected", "t": 5.0, "detector": "people", "action": "dip", "stage": "fast", "p": 0.55},
+            {"kind": "scene_cut_detected", "t": 8.0, "detector": "people", "action": "confirm", "stage": "full",
+             "p": 0.7, "error": None},
+            {"kind": "scene_cut_detected", "t": 20.0, "detector": "pixel", "action": "cut", "stage": "pixel", "p": 0.8,
+             "error": "ImportError: No module named 'ultralytics'"},
+            {"kind": "scene_cut_detected", "t": 30.0, "action": "none", "stage": "fast", "p": 0.1},
+            {"kind": "scene_cut_detected", "t": 40.0, "direction": "left_to_right", "confidence": 0.9}]
+    write_html(recs, tmp_path / "r.html", "x")
+    html = (tmp_path / "r.html").read_text(encoding="utf-8")
+    assert "full: confirm" in html and "ultralytics" in html and "fast: none" not in html
+    assert summarize(recs)["scene_cuts"] == 3

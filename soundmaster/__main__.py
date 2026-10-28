@@ -76,7 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--no-push", action="store_true", help="не отправлять собранное на GitHub самому")
     cs.add_argument("--save-clips", action="store_true",
                     help="нарезать ролики mp4 (не нужно для YouTube: разметка смотрит видео во встроенном плеере)")
-    cs.add_argument("--model", default="yolo11s.pt", help="нейросеть для людей (yolo11n.pt — быстрее, yolo11m.pt — точнее)")
+    cs.add_argument("--model", default="yolo11s-pose.pt",
+                    help="нейросеть для людей и их позы (yolo11n-pose.pt — быстрее, yolo11m-pose.pt — точнее)")
+    cs.add_argument("--labeled", action="store_true",
+                    help="только видео, где уже есть разметка (пересбор для новых признаков, разметка сохраняется)")
     ls_ = sub.add_parser("label-scenecuts", help="разметить собранные ролики «монтаж / не монтаж» в браузере")
     ls_.add_argument("--out", default="data/scenecut")
     ls_.add_argument("--clips", default="recordings/scenecut_clips")
@@ -94,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             res = collect(args.sources, Path(args.out), Path(args.clips), limit=args.limit,
                           only_shows=args.only_shows, model=args.model, save_clips=args.save_clips,
-                          push=not args.no_push)
+                          push=not args.no_push, labeled_only=args.labeled)
         except (RuntimeError, ImportError) as e:
             print(f"Ошибка: {e}")
             return 1

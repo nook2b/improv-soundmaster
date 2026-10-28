@@ -9,7 +9,9 @@
 (cut_other — монтаж есть, но нужного человека нет среди рамок). Если жёлтая рамка не на том, Иван
 указывает нужного человека кликом — data/scenecut/tracks.json {id кандидата: id траектории}.
 Пропущенные программой монтажи — временем в записи, data/scenecut/manual.json {id видео: [секунды]};
-при следующем сборе по ним появляются кандидаты с меткой «монтаж». Всё это — в git (только числа).
+при следующем сборе по ним появляются кандидаты с меткой «монтаж». Отрезки, где монтажи не учитываются
+(разминка, упражнения на занятии), — data/scenecut/ignore.json {id видео: [[начало, конец], …]} в секундах:
+кандидаты оттуда не показываются на разметке и не идут в обучение. Всё это — в git (только числа).
 """
 
 from __future__ import annotations
@@ -19,17 +21,30 @@ import webbrowser
 from pathlib import Path
 
 LABELS = ("cut", "cut_other", "no", "unsure")
-SERVICE = ("labels.json", "manual.json", "tracks.json")
+SERVICE = ("labels.json", "manual.json", "tracks.json", "ignore.json")
+
+
+def load_ignore(data_dir: Path) -> dict[str, list[list[float]]]:
+    """Отрезки видео, где монтажи не учитываются: {id видео: [[начало, конец], …]} (секунды записи)."""
+    p = data_dir / "ignore.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def ignored(ranges: list[list[float]], t: float) -> bool:
+    return any(a <= t < b for a, b in ranges)
 
 
 def load_items(data_dir: Path) -> list[dict]:
     items = []
+    skip = load_ignore(data_dir)
     for p in sorted(data_dir.glob("*.json")):
         if p.name in SERVICE:
             continue
         d = json.loads(p.read_text(encoding="utf-8"))
         src = d.get("source", "")
         for c in d.get("candidates", []):
+            if ignored(skip.get(d["video"], []), c["t_start"]):
+                continue
             items.append({"id": c["id"], "clip": c.get("clip"), "wide": c.get("clip_wide"), "video": d["video"],
                           "title": d["title"], "t": c.get("t_clip", c["t_start"]), "sources": c.get("sources", []),
                           "t_start": c["t_start"], "t_end": c.get("t_pass_end", c.get("t_end", c["t_start"])),
