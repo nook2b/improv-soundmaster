@@ -384,3 +384,19 @@ def test_collect_labeled_only(tmp_path, monkeypatch):
     col.collect(["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips", progress=lambda s: None,
                 detector_factory=lambda: None, embedder_factory=lambda: None, labeled_only=True)
     assert seen == ["a_b"]
+
+
+def test_collect_redoes_videos_without_frame_description(tmp_path, monkeypatch):
+    """Собрано без описания кадра (не было timm), а теперь оно работает — видео собирается заново."""
+    from soundmaster.learn import collect as col
+
+    monkeypatch.setattr(col, "playlist", lambda url: [{"id": "a", "title": "Компот", "duration": 1, "url": "u"}])
+    monkeypatch.setattr(col, "ffmpeg_bin", lambda name="ffmpeg": "ffmpeg")
+    seen = []
+    monkeypatch.setattr(col, "process", lambda src, vid, *a, **k: seen.append(vid) or {"candidates": []})
+    (tmp_path / "a.json").write_text(json.dumps({"version": col.VERSION, "embedder": None}), encoding="utf-8")
+    args = (["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips")
+    col.collect(*args, progress=lambda s: None, detector_factory=lambda: None, embedder_factory=lambda: None)
+    assert seen == []  # описания кадра нет и сейчас — не трогаем
+    col.collect(*args, progress=lambda s: None, detector_factory=lambda: None, embedder_factory=lambda: object())
+    assert seen == ["a"]
