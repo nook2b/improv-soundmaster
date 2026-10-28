@@ -125,7 +125,7 @@ def test_collect_skips_done_and_orders_shows_first(tmp_path, monkeypatch):
     (tmp_path / "a.json").write_text('{"version": %d}' % col.VERSION, encoding="utf-8")  # уже собрано раньше
     (tmp_path / "c.json").write_text('{"version": 1}', encoding="utf-8")  # старый отбор — собрать заново
     col.collect(["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips",
-                progress=lambda s: None, detector_factory=lambda: None)
+                progress=lambda s: None, detector_factory=lambda: None, embedder_factory=lambda: None)
     assert seen == ["b", "c"]
 
 
@@ -328,3 +328,59 @@ def test_ignored_ranges_hidden_from_labeling(tmp_path):
     (tmp_path / "ignore.json").write_text(json.dumps({"v": [[0, 2520]]}), encoding="utf-8")
     assert [i["id"] for i in load_items(tmp_path)] == ["v_030000"]
     assert [v["video"] for v in videos(tmp_path)] == ["v"]  # ignore.json — не видео
+
+
+def test_process_stores_pose_audio_and_frame_description(tmp_path):
+    """Пересбор v4: точки тела, звук вокруг прохода и описание кадра в 5 моментах — только числа."""
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("нет ffmpeg")
+    from soundmaster.learn.collect import H, W, process
+    from soundmaster.learn.signals import AUDIO_NAMES, unpack, unpack_pose
+
+    video = tmp_path / "show.mp4"
+    _moving_box_video(tmp_path / "v.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(tmp_path / "v.mp4"), "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=12", "-shortest", "-c:v", "copy", "-c:a", "aac", str(video)],
+                   check=True)
+
+    class People:
+        last_pose = {}
+
+        def __call__(self, rgb, t):
+            cols = np.nonzero((rgb[..., 0] > 128).any(axis=0))[0]
+            if len(cols) < 5:
+                self.last_pose = {}
+                return {}
+            self.last_pose = {1: [0.5, 0.2] * 13}
+            return {1: (cols[0] / W, 60 / H, cols[-1] / W, 340 / H)}
+
+    calls = []
+
+    def embed(rgb):
+        calls.append(rgb.shape)
+        return np.full(384, 0.25, np.float32)
+
+    r = process(str(video), "vid1", "Компот — тест", tmp_path / "data", tmp_path / "clips", People(),
+                progress=lambda s: None, embedder=embed)
+    c = r["candidates"][0]
+    assert c["pose"] and all(set(p) <= {"1"} for _, p in c["pose"]) and any(p for _, p in c["pose"])
+    assert unpack_pose(next(p["1"] for _, p in c["pose"] if p)) == [0.5, 0.2] * 13
+    assert unpack(c["emb"]["v"]).shape == (5, 384) and len(c["emb"]["t"]) == 5 and 1 <= len(calls) <= 5
+    a = c["audio"]
+    assert a["hop"] == 0.25 and len(a["f"][0]) == len(AUDIO_NAMES) and a["f"][len(a["f"]) // 2][0] > -30  # тон слышен
+    assert r["audio"] is True and r["version"] == 4
+
+
+def test_collect_labeled_only(tmp_path, monkeypatch):
+    from soundmaster.learn import collect as col
+
+    entries = [{"id": "a_b", "title": "Компот 1", "duration": 1, "url": "u1"},
+               {"id": "c", "title": "Компот 2", "duration": 1, "url": "u2"}]
+    monkeypatch.setattr(col, "playlist", lambda url: entries)
+    monkeypatch.setattr(col, "ffmpeg_bin", lambda name="ffmpeg": "ffmpeg")
+    seen = []
+    monkeypatch.setattr(col, "process", lambda src, vid, *a, **k: seen.append(vid) or {"candidates": []})
+    (tmp_path / "labels.json").write_text(json.dumps({"a_b_000100": "cut"}), encoding="utf-8")
+    col.collect(["https://youtube.com/playlist?list=x"], tmp_path, tmp_path / "clips", progress=lambda s: None,
+                detector_factory=lambda: None, embedder_factory=lambda: None, labeled_only=True)
+    assert seen == ["a_b"]
