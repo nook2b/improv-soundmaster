@@ -369,14 +369,17 @@ def process(source: str, vid: str, title: str, out_dir: Path, clip_dir: Path, de
     return result
 
 
-def default_embedder(progress: Callable[[str], None] = print):
-    """Описание кадра (DINOv2) — если установлен timm; иначе сбор идёт без него (с предупреждением)."""
+def default_embedder(progress: Callable[[str], None] = print, weights: str | None = None):
+    """Описание кадра (DINOv2) — если установлен timm и есть веса; иначе сбор идёт без него (с предупреждением)."""
     from .signals import FrameEmbedder
 
     try:
-        return FrameEmbedder()
+        return FrameEmbedder(weights=weights)
     except Exception as e:  # noqa: BLE001
-        progress(f"Описание кадра не включено ({type(e).__name__}: {e}) — установите: pip install -e \".[learn]\"")
+        progress(f"Описание кадра не включено ({type(e).__name__}: {str(e)[:300]}).\n"
+                 f"  Нет timm — pip install -e \".[learn]\". Не скачиваются веса с Hugging Face — скачайте браузером\n"
+                 f"  https://huggingface.co/timm/{FrameEmbedder.MODEL}/resolve/main/model.safetensors\n"
+                 f"  и положите в {FrameEmbedder.LOCAL} (или укажите --emb-weights ФАЙЛ).")
         return None
 
 
@@ -451,14 +454,14 @@ def collect(sources: list[str], out_dir: Path, clip_dir: Path, limit: int | None
             fps: float = 10.0, progress: Callable[[str], None] = print,
             detector_factory: Callable[[], Callable] | None = None, model: str = "yolo11s-pose.pt",
             save_clips: bool = False, push: bool = False, labeled_only: bool = False,
-            embedder_factory: Callable[[], Callable | None] | None = None) -> list[dict]:
+            embedder_factory: Callable[[], Callable | None] | None = None, emb_weights: str | None = None) -> list[dict]:
     """Собрать примеры со всех источников (плейлисты/ссылки/файлы); готовые видео пропускаются.
 
     labeled_only — только видео, где уже есть разметка (пересбор для новых признаков: размечать заново не нужно).
     """
     ffmpeg_bin()
     make = detector_factory or (lambda: YoloPeople(model))
-    embedder = embedder_factory() if embedder_factory else default_embedder(progress)
+    embedder = embedder_factory() if embedder_factory else default_embedder(progress, emb_weights)
     if embedder is None:
         progress("ВНИМАНИЕ: сбор идёт без описания кадра. Остановите (Ctrl+C), установите pip install -e \".[learn]\" "
                  "и запустите снова — иначе эти видео придётся собирать ещё раз.")

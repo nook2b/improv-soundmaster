@@ -121,13 +121,23 @@ class FrameEmbedder:
     """Описание кадра готовой нейросетью DINOv2-small (timm; скачиваются только веса). Кадр RGB → 384 числа."""
 
     MODEL = "vit_small_patch14_dinov2.lvd142m"
+    # веса можно скачать браузером и положить сюда (если Hugging Face не открывается из программы):
+    # https://huggingface.co/timm/vit_small_patch14_dinov2.lvd142m/resolve/main/model.safetensors
+    LOCAL = "models/dinov2_small.safetensors"
 
-    def __init__(self, model: str = MODEL, size: int = 224):
+    def __init__(self, model: str = MODEL, size: int = 224, weights: str | None = None):
+        from pathlib import Path
+
         import timm  # type: ignore
         import torch  # type: ignore
 
         self.torch = torch
-        self.net = timm.create_model(model, pretrained=True, num_classes=0, img_size=size).eval()
+        local = Path(weights) if weights else Path(self.LOCAL)
+        if weights and not local.exists():
+            raise FileNotFoundError(f"нет файла весов {local}")
+        overlay = {"file": str(local)} if local.exists() else None
+        self.net = timm.create_model(model, pretrained=True, num_classes=0, img_size=size,
+                                     pretrained_cfg_overlay=overlay).eval()
         self.size = size
         self.mean = np.array([0.485, 0.456, 0.406], np.float32)
         self.std = np.array([0.229, 0.224, 0.225], np.float32)
