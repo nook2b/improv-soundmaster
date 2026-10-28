@@ -47,7 +47,7 @@ def test_two_step_decisions(fast, full, leave, expected):
     det = PeopleCutDetector(const_model(fast, full), scene(leave), PeopleCutConfig())
     evs = run(det)
     assert [e.action for e in evs] == expected
-    assert evs[0].stage == "fast" and 6.0 <= evs[0].t <= 8.0  # ~1 с после прохода
+    assert evs[0].stage == "fast" and 5.3 <= evs[0].t <= 6.5  # сразу, как проход распознан (ещё во время прохода)
     if len(evs) > 1:
         assert evs[1].stage == "full" and evs[1].t >= evs[0].t + 1.5
 
