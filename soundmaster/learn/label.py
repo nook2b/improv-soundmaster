@@ -425,7 +425,10 @@ for(const [id,zoom] of [["tlFull",false],["tlZoom",true]])$(id).addEventListener
 
 // ---- отметки ----
 async function label(l,force){const c=curC();if(!c)return;const nl=labels[c.id]===l&&!force?null:l;const d=await post("/api/label",{id:c.id,label:nl});if(!d)return;
- if(nl)labels[c.id]=nl;else delete labels[c.id];say(`Ролик ${fmt(c.t_start)}: ${nl?NAMES[nl]:"отметка снята"}`);renderVids();draw();
+ if(nl)labels[c.id]=nl;else delete labels[c.id];
+ // хвост монтажа (≤ 10 с после, как кулдаун сцены на шоу) больше не нужен — убираем сразу (как after_cut на сервере)
+ let tail=0;if(nl==="cut"||nl==="cut_other"){const n0=all.length;all=all.filter(x=>!(x.video===c.video&&!labels[x.id]&&x.t_start>c.t_start&&x.t_start-c.t_start<=10));tail=n0-all.length}
+ say(`Ролик ${fmt(c.t_start)}: ${nl?NAMES[nl]:"отметка снята"}`+(tail?` · убрано продолжений монтажа: ${tail}`:""));renderVids();draw();
  if(nl&&$("auto").checked)setTimeout(()=>next(),250)}
 // Видео сама страница не переключает: только кнопкой шоу сверху (Иван перепроверяет размеченные шоу).
 function next(){const cs=cands(),c=curC(),from=c?c.t_start:t;
