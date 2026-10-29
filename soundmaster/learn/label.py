@@ -34,17 +34,33 @@ def ignored(ranges: list[list[float]], t: float) -> bool:
     return any(a <= t < b for a, b in ranges)
 
 
+# Сразу после монтажа (≤ 10 с, как scene_cut.cooldown в show.yaml) новый «монтаж» на шоу не учитывается:
+# сцена только началась. Такие кандидаты — обычно конец того же прохода (монтажник уходит со сцены):
+# их не показываем на разметке и не берём в обучение (Иван, 2026-10-29).
+AFTER_CUT = 10.0
+
+
+def after_cut(cands: list[dict], labels: dict[str, str], window: float = AFTER_CUT) -> set[str]:
+    """id кандидатов, начавшихся в пределах window с после размеченного монтажа того же видео."""
+    cuts = [c["t_start"] for c in cands if labels.get(c["id"]) in ("cut", "cut_other")]
+    return {c["id"] for c in cands if any(0 < c["t_start"] - s <= window for s in cuts)}
+
+
 def load_items(data_dir: Path) -> list[dict]:
     items = []
     skip = load_ignore(data_dir)
+    labels = load_labels(data_dir)
     for p in sorted(data_dir.glob("*.json")):
         if p.name in SERVICE:
             continue
         d = json.loads(p.read_text(encoding="utf-8"))
         src = d.get("source", "")
+        near_cut = after_cut(d.get("candidates", []), labels)
         for c in d.get("candidates", []):
             if ignored(skip.get(d["video"], []), c["t_start"]):
                 continue
+            if c["id"] in near_cut and c["id"] not in labels:
+                continue  # хвост только что размеченного монтажа — на шоу не учитывается
             items.append({"id": c["id"], "clip": c.get("clip"), "wide": c.get("clip_wide"), "video": d["video"],
                           "title": d["title"], "t": c.get("t_clip", c["t_start"]), "sources": c.get("sources", []),
                           "t_start": c["t_start"], "t_end": c.get("t_pass_end", c.get("t_end", c["t_start"])),

@@ -400,3 +400,14 @@ def test_collect_redoes_videos_without_frame_description(tmp_path, monkeypatch):
     assert seen == []  # описания кадра нет и сейчас — не трогаем
     col.collect(*args, progress=lambda s: None, detector_factory=lambda: None, embedder_factory=lambda: object())
     assert seen == ["a"]
+
+
+def test_tail_right_after_cut_hidden_and_not_trained(tmp_path):
+    """Кандидат ≤ 10 с после размеченного монтажа (монтажник уходит) — не на разметке, на шоу кулдаун сцены."""
+    from soundmaster.learn.label import load_items
+
+    (tmp_path / "v.json").write_text(json.dumps({"video": "v", "title": "Шоу", "candidates": [
+        {"id": "v_000100", "t_start": 10.0}, {"id": "v_000160", "t_start": 16.0},
+        {"id": "v_000300", "t_start": 30.0}]}), encoding="utf-8")
+    (tmp_path / "labels.json").write_text(json.dumps({"v_000100": "cut"}), encoding="utf-8")
+    assert [i["id"] for i in load_items(tmp_path)] == ["v_000100", "v_000300"]

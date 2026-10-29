@@ -140,7 +140,7 @@ def live_features(frames: Frames, pixel: bool, scene_age: float, near: tuple[flo
 
 def examples(data_dir: Path, progress: Callable[[str], None] | None = None) -> list[Example]:
     """Размеченные кандидаты (cut / cut_other / no) с признаками — такими, какими их увидел бы детектор на шоу."""
-    from .label import ignored, load_ignore, load_labels, load_manual, load_tracks
+    from .label import after_cut, ignored, load_ignore, load_labels, load_manual, load_tracks
 
     labels, tracks, manual = load_labels(data_dir), load_tracks(data_dir), load_manual(data_dir)
     skip = load_ignore(data_dir)
@@ -152,9 +152,11 @@ def examples(data_dir: Path, progress: Callable[[str], None] | None = None) -> l
         vid = d.get("video", p.stem)
         off = skip.get(vid, [])
         cands = [c for c in d.get("candidates", []) if not ignored(off, c["t_start"])]
+        near_cut = after_cut(cands, labels)  # ≤ 10 с после монтажа: на шоу не учитывается (кулдаун сцены)
+        cands_all, cands = cands, [c for c in cands if c["id"] not in near_cut]
         # начала сцен — размеченные монтажи, ручные отметки и концы пропущенных отрезков (разминка
         # кончилась — пошли сцены): «время сцены» как на шоу
-        cuts = sorted([c["t_start"] for c in cands if labels.get(c["id"]) in ("cut", "cut_other")]
+        cuts = sorted([c["t_start"] for c in cands_all if labels.get(c["id"]) in ("cut", "cut_other")]
                       + [t for t in manual.get(vid, []) if not ignored(off, t)] + [b for _, b in off])
         for c in cands:
             lab = labels.get(c["id"])
