@@ -151,3 +151,33 @@ def test_report_reads_model_scene_cut_records(tmp_path):
     html = (tmp_path / "r.html").read_text(encoding="utf-8")
     assert "full: confirm" in html and "ultralytics" in html and "fast: none" not in html
     assert summarize(recs)["scene_cuts"] == 3
+
+
+def test_pose_features_same_in_training_and_on_show():
+    """Точки тела: детектор на шоу (last_pose у YOLO-pose) и обучение (точки из сбора) дают одни и те же признаки."""
+    from soundmaster.learn.model import live_features
+
+    base = scene(True)
+    runner = [0.5, 0.2, 0.45, 0.3, 0.55, 0.3, 0.4, 0.45, 0.62, 0.45, 0.35, 0.55, 0.7, 0.5,
+              0.47, 0.6, 0.53, 0.6, 0.46, 0.75, 0.55, 0.75, 0.42, 0.9, 0.6, 0.9]  # рука вытянута вправо
+
+    class People:
+        last_pose = {}
+
+        def __call__(self, rgb, t):
+            b = base(rgb, t)
+            self.last_pose = {9: runner} if 9 in b else {}
+            return b
+
+    frames, pose = [], []
+    for k in range(80):
+        t = k / 5
+        b = {i: x for i, x in base(None, t).items() if x[3] - x[1] > 0.12}
+        frames.append((t, b))
+        pose.append((t, {9: runner} if 9 in b else {}))
+    fast, full = live_features(frames, False, 30.0, (5.0, 6.2), None, pose)
+    assert fast["pose_n"] > 0 and fast["pose_arm"] > 0.3 and fast["pose_face"] == 1.0
+    det = PeopleCutDetector(const_model(0.55, 0.9), People(), PeopleCutConfig(), scene_start=lambda: 0.0)
+    evs = run(det)
+    assert evs[0].features == pytest.approx({**fast, "scene_age": evs[0].features["scene_age"]})
+    assert evs[1].features == pytest.approx({**full, "scene_age": evs[1].features["scene_age"]})

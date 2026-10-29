@@ -39,7 +39,7 @@ class PeopleCutConfig:
     cut: float = 0.6
     dip: float = 0.5
     confirm: float = 0.5
-    yolo: str = "yolo11s.pt"
+    yolo: str = "yolo11s-pose.pt"  # рамки людей и точки тела (модель обучена на позе с 2026-10-29)
     model: str = "config/scenecut_model.json"
 
     @classmethod
@@ -83,6 +83,7 @@ class PeopleCutDetector:
         self.fallback: SceneCutDetector | None = None  # старый детектор, если YOLO не работает
         self.error: str | None = None
         self.log: deque[tuple[float, dict[int, Box]]] = deque()
+        self.pose: deque[tuple[float, dict[int, list[float]]]] = deque()  # точки тела крупных людей (YOLO-pose)
         self._last_detect = -1e9
 
     @property
@@ -107,12 +108,18 @@ class PeopleCutDetector:
             self.boxes(t, boxes)
         return self.step(t)
 
-    def boxes(self, t: float, boxes: dict[int, Box]) -> None:
+    def boxes(self, t: float, boxes: dict[int, Box], pose: dict[int, list[float]] | None = None) -> None:
         boxes = {k: b for k, b in boxes.items() if b[3] - b[1] > 0.12}  # как в собранных примерах
         self.log.append((t, boxes))
+        if pose is None:
+            pose = getattr(self.people, "last_pose", None) or {}
+        # как при сборе: точки тела только крупных людей
+        self.pose.append((t, {k: kp for k, kp in pose.items() if k in boxes and boxes[k][3] - boxes[k][1] > 0.3}))
         keep = t - (BEFORE_KEEP + MAX_SPAN + FULL_AFTER)
         while self.log and self.log[0][0] < keep:
             self.log.popleft()
+        while self.pose and self.pose[0][0] < keep:
+            self.pose.popleft()
         self.passes.boxes(t, boxes)
 
     def step(self, t: float) -> list[PeopleCutEvent]:
@@ -125,12 +132,12 @@ class PeopleCutDetector:
                 if c.track < 0:  # только пиксельный: при сборе такие не показывались — модель их не знает
                     st["skip"] = True
                     continue
-                f = features_at(c.track, c.sources, self.log, c.t_start, c.t_end, FAST_AFTER, st["age"])
+                f = features_at(c.track, c.sources, self.log, c.t_start, c.t_end, FAST_AFTER, st["age"], self.pose)
                 st["p"] = self.model.proba("fast", f)
                 st["action"] = "cut" if st["p"] >= pol.cut else "dip" if st["p"] >= pol.dip else None
                 out.append(PeopleCutEvent(st["action"] or "none", t, c.t_start, c.t_end, st["p"], "fast", f))
             elif not st.get("skip"):
-                f = features_at(c.track, c.sources, self.log, c.t_start, c.t_end, FULL_AFTER, st["age"])
+                f = features_at(c.track, c.sources, self.log, c.t_start, c.t_end, FULL_AFTER, st["age"], self.pose)
                 p_full = self.model.proba("full", f)
                 ok = is_scenecut_candidate(f, self.pass_cfg)
                 action = st["action"]
@@ -200,6 +207,10 @@ class LazyYolo:
 
             self._impl = YoloPeople(self.model)
         return self._impl(rgb, t)
+
+    @property
+    def last_pose(self) -> dict[int, list[float]]:
+        return getattr(self._impl, "last_pose", None) or {}
 
 
 def make_scenecut(sc: dict, scene_start: Callable[[], float]):

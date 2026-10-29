@@ -170,3 +170,36 @@ def pack(vectors: Iterable[np.ndarray]) -> str:
 
 def unpack(s: str, dim: int = 384) -> np.ndarray:
     return np.frombuffer(base64.b64decode(s), np.float16).astype(np.float32).reshape(-1, dim)
+
+
+PoseLog = list[tuple[float, dict[int, list[float]]]]  # (t, {id траектории: 26 чисел}) — только крупные люди
+POSE_FEATURES = ("pose_face", "pose_arm", "pose_lean", "pose_crouch", "pose_stride", "others_face", "pose_n")
+
+
+def pose_features(pose: PoseLog, track: int, t_start: float, t_dec: float) -> dict[str, float]:
+    """Поза идущего до момента решения (с 1 с до начала прохода): повёрнут ли к залу (виден нос), вытянута
+    ли рука, наклон корпуса, присед, ширина шага; у остальных крупных — доля повёрнутых к залу во время прохода.
+    Одинаково при обучении (точки из сбора) и на шоу (точки из YOLO-pose)."""
+    face, arm, lean, crouch, stride = [], [], [], [], []
+    others = []
+    for t, people in pose:
+        if t_start - 1.0 <= t <= t_dec and track in people:
+            P = np.array(people[track], np.float32).reshape(13, 2)
+            vis = P[:, 0] >= 0
+            face.append(float(vis[0]))
+            h = float(P[vis][:, 1].max() - P[vis][:, 1].min()) if vis.sum() >= 2 else 0.0
+            h = max(h, 1e-3)
+            sh, hp, wr, an = P[1:3][vis[1:3]], P[7:9][vis[7:9]], P[5:7][vis[5:7]], P[11:13][vis[11:13]]
+            if len(sh) and len(wr):
+                arm.append(float(np.max(np.abs(wr[:, 0][:, None] - sh[:, 0][None]))) / h)
+            if len(sh) and len(hp):
+                lean.append(abs(float(sh[:, 0].mean() - hp[:, 0].mean())) / h)
+                crouch.append(float(hp[:, 1].mean() - sh[:, 1].mean()) / h)
+            if len(an) == 2:
+                stride.append(abs(float(an[0, 0] - an[1, 0])) / h)
+        if t_start <= t <= t_dec:
+            others += [float(k[0] >= 0) for tid, k in people.items() if tid != track]
+    return {"pose_face": float(np.mean(face)) if face else 0.0, "pose_arm": max(arm) if arm else 0.0,
+            "pose_lean": float(np.mean(lean)) if lean else 0.0, "pose_crouch": float(np.mean(crouch)) if crouch else 0.0,
+            "pose_stride": max(stride) if stride else 0.0, "others_face": float(np.mean(others)) if others else 0.5,
+            "pose_n": float(len(face))}

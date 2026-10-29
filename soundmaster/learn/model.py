@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .passes import Frames, LivePass, LivePasses, pass_features
+from .signals import POSE_FEATURES, PoseLog, pose_features, unpack_pose
 
 # 0 с: решение — в момент, когда проход распознан; проверено 2026-10-28 на 0 / 0,5 / 1 с — без ожидания
 # точность не хуже (81% против 78%), а сразу решается больше монтажей (Иван: главное — быстродействие)
@@ -31,9 +32,10 @@ FAST_AFTER = 0.0
 FULL_AFTER = 3.0
 BEFORE = 3.0
 MAX_AGE = 600.0  # «время сцены» дольше 10 минут не различаем
-# признаки по порядку: проход (pass_features) + сколько секунд идёт текущая сцена
+# признаки по порядку: проход (pass_features) + сколько секунд идёт текущая сцена + поза (YOLO-pose, с 2026-10-29:
+# ложных смен сцены 38 вместо 45 при той же скорости; звук и описание кадра пока не дали надёжного выигрыша)
 FEATURES = ("dur", "edge_in", "edge_out", "height", "moved", "net", "occlusion", "people_after", "people_before",
-            "pixel", "span", "speed", "straight", "top", "bottom", "vis", "scene_age")
+            "pixel", "span", "speed", "straight", "top", "bottom", "vis", "scene_age") + POSE_FEATURES
 SKIP_FILES = {"labels.json", "manual.json", "tracks.json", "ignore.json"}
 
 
@@ -88,11 +90,13 @@ class CutModel:
 
 
 def features_at(track: int, sources: list[str], frames: Frames, t_start: float, t_end: float, after: float,
-                scene_age: float) -> dict[str, float]:
-    """Признаки так, как их видит детектор на шоу через after с после прохода (будущих кадров нет)."""
+                scene_age: float, pose: PoseLog | None = None) -> dict[str, float]:
+    """Признаки так, как их видит детектор на шоу через after с после прохода (будущих кадров нет).
+    pose — точки тела крупных людей (signals.PoseLog); нет — признаки позы как «не видно»."""
     window = [(t, b) for t, b in frames if t_start - BEFORE <= t <= t_end + after]
     f = pass_features(track, sources, window, t_start, t_end, BEFORE, after)
     f["scene_age"] = min(MAX_AGE, max(0.0, scene_age))
+    f.update(pose_features(pose or [], track, t_start, t_end + after))
     return f
 
 
@@ -107,7 +111,7 @@ class Example:
 
 
 def live_features(frames: Frames, pixel: bool, scene_age: float, near: tuple[float, float],
-                  track: int | None = None) -> tuple[dict[str, float], dict[str, float]] | None:
+                  track: int | None = None, pose: PoseLog | None = None) -> tuple[dict[str, float], dict[str, float]] | None:
     """Прогнать сохранённые рамки через тот же поиск проходов, что на шоу (LivePasses), и взять признаки
     момента рядом с near=(начало, конец): (fast, full). None — на шоу этот момент не нашёлся бы.
 
@@ -130,7 +134,7 @@ def live_features(frames: Frames, pixel: bool, scene_age: float, near: tuple[flo
     hit = next((p for p in hits if p.c.track == track), hits[0])
     c = hit.c
     sources = sorted(set(c.sources) | ({"pixel"} if pixel else set()))
-    return tuple(features_at(c.track, sources, frames, c.t_start, c.t_end, after, scene_age)  # type: ignore[return-value]
+    return tuple(features_at(c.track, sources, frames, c.t_start, c.t_end, after, scene_age, pose)  # type: ignore[return-value]
                  for after in (FAST_AFTER, FULL_AFTER))
 
 
@@ -160,7 +164,9 @@ def examples(data_dir: Path, progress: Callable[[str], None] | None = None) -> l
             prev = [x for x in cuts if x < c["t_start"] - 8]
             age = c["t_start"] - (prev[-1] if prev else 0.0)
             tr = int(tracks[c["id"]]) if c["id"] in tracks else None
-            f = live_features(frames, "pixel" in c["sources"], age, (c["t_start"], c.get("t_pass_end", c["t_end"])), tr)
+            pose = [(t, {int(k): unpack_pose(v) for k, v in p.items()}) for t, p in c.get("pose", [])]
+            f = live_features(frames, "pixel" in c["sources"], age, (c["t_start"], c.get("t_pass_end", c["t_end"])), tr,
+                              pose)
             if f is None:
                 lost += lab != "no"
                 continue
